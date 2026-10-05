@@ -1,0 +1,1143 @@
+local RunService = game:GetService("RunService")
+
+-- ========================================================
+--  CONFIGURAÇÃO: coloque seu UserId (e de outros admins)
+-- ========================================================
+local ADMINS = {
+	[1234567890] = true, -- troque pelo seu UserId
+}
+
+local REGEN_MIN, REGEN_MAX = 1, 100
+
+if RunService:IsServer() then
+	-- ====================================================
+	--  PARTE DO SERVIDOR (regeneração de vida de verdade)
+	-- ====================================================
+	local Players = game:GetService("Players")
+	local RS = game:GetService("ReplicatedStorage")
+
+	local remote = Instance.new("RemoteEvent")
+	remote.Name = "AdminRegenEvent"
+	remote.Parent = RS
+
+	local state = {} -- [player] = { on, rate, conn }
+
+	local function setup(player)
+		if not ADMINS[player.UserId] then return end
+		local s = { on = false, rate = 10, conn = nil }
+		state[player] = s
+
+		s.conn = RunService.Heartbeat:Connect(function(dt)
+			if not s.on then return end
+			local char = player.Character
+			local hum = char and char:FindFirstChildOfClass("Humanoid")
+			if hum and hum.Health > 0 and hum.Health < hum.MaxHealth then
+				hum.Health = math.min(hum.MaxHealth, hum.Health + s.rate * dt)
+			end
+		end)
+	end
+
+	remote.OnServerEvent:Connect(function(player, on, rate)
+		if not ADMINS[player.UserId] then return end
+		local s = state[player]
+		if not s then return end
+		s.on = (on == true)
+		if typeof(rate) == "number" then
+			s.rate = math.clamp(rate, REGEN_MIN, REGEN_MAX)
+		end
+	end)
+
+	Players.PlayerAdded:Connect(setup)
+	Players.PlayerRemoving:Connect(function(player)
+		local s = state[player]
+		if s and s.conn then s.conn:Disconnect() end
+		state[player] = nil
+	end)
+	for _, p in ipairs(Players:GetPlayers()) do setup(p) end
+
+else
+	-- ====================================================
+	--  PARTE DO CLIENTE (menu, ESP, voar, etc.)
+	-- ====================================================
+	local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
+
+	local Players = game:GetService("Players")
+	local UIS = game:GetService("UserInputService")
+	local RS = game:GetService("ReplicatedStorage")
+	local Lighting = game:GetService("Lighting")
+
+	local lp = Players.LocalPlayer
+	local cam = workspace.CurrentCamera
+
+	local CREATOR = "AOIofc1"
+	local YOUTUBE = "https://www.youtube.com/@AOIofc1"
+
+	-- ID da logo AOI (só os números). Deixe "" para usar a letra "A".
+	local LOGO_ID = "130575963660926"
+
+	local settings = {
+		Caixa = true,
+		Nome = true,
+		Vida = true,
+	}
+
+	local objects = {}
+	local syncing = false
+	local flyToggle, noclipToggle, regenToggle, speedToggle
+
+	local container = Instance.new("Folder")
+	container.Name = "ESP_Container"
+	container.Parent = cam
+
+	-- ========= ESP: CRIAR / REMOVER =========
+	local function clear(player)
+		local o = objects[player]
+		if o then
+			o.folder:Destroy()
+			objects[player] = nil
+		end
+	end
+
+	local function makeLabel(parent, order, color)
+		local l = Instance.new("TextLabel")
+		l.BackgroundTransparency = 1
+		l.Size = UDim2.new(1, 0, 0, 14)
+		l.Font = Enum.Font.GothamBold
+		l.TextSize = 13
+		l.TextColor3 = color
+		l.TextStrokeTransparency = 0
+		l.LayoutOrder = order
+		l.Parent = parent
+		return l
+	end
+
+	local function build(player, char)
+		clear(player)
+		if player == lp then return end
+
+		local hrp = char:WaitForChild("HumanoidRootPart", 5)
+		local hum = char:WaitForChild("Humanoid", 5)
+		local head = char:WaitForChild("Head", 5)
+		if not (hrp and hum and head) then return end
+		if hum.Health <= 0 then return end
+
+		local folder = Instance.new("Folder")
+		folder.Name = player.Name
+		folder.Parent = container
+
+		local box = Instance.new("BoxHandleAdornment")
+		box.Adornee = hrp
+		box.Size = Vector3.new(4, 5.5, 1.5)
+		box.AlwaysOnTop = true
+		box.ZIndex = 5
+		box.Transparency = 0.6
+		box.Color3 = Color3.fromRGB(255, 60, 60)
+		box.Parent = folder
+
+		local gui = Instance.new("BillboardGui")
+		gui.Adornee = head
+		gui.AlwaysOnTop = true
+		gui.Size = UDim2.new(0, 160, 0, 32)
+		gui.StudsOffset = Vector3.new(0, 3, 0)
+		gui.Parent = folder
+
+		local layout = Instance.new("UIListLayout")
+		layout.SortOrder = Enum.SortOrder.LayoutOrder
+		layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+		layout.VerticalAlignment = Enum.VerticalAlignment.Bottom
+		layout.Parent = gui
+
+		local nameL = makeLabel(gui, 1, Color3.new(1, 1, 1))
+		local hpL = makeLabel(gui, 2, Color3.fromRGB(80, 255, 80))
+		nameL.Text = player.DisplayName
+
+		objects[player] = {
+			folder = folder, box = box, gui = gui,
+			name = nameL, hp = hpL, hrp = hrp, hum = hum,
+		}
+
+		-- Morreu: deleta (recria no CharacterAdded ao renascer)
+		hum.Died:Connect(function()
+			clear(player)
+		end)
+	end
+
+	local function track(player)
+		if player == lp then return end
+		player.CharacterAdded:Connect(function(char)
+			build(player, char)
+		end)
+		player.CharacterRemoving:Connect(function()
+			clear(player)
+		end)
+		if player.Character then
+			task.spawn(build, player, player.Character)
+		end
+	end
+
+	Players.PlayerAdded:Connect(track)      -- entrou: cria
+	Players.PlayerRemoving:Connect(clear)   -- saiu: deleta
+	for _, p in ipairs(Players:GetPlayers()) do track(p) end
+
+	-- ========= REGENERAÇÃO DE VIDA =========
+	local regen = { On = false, Rate = 10 }
+
+	local function syncRegen(state)
+		if regenToggle then
+			syncing = true
+			pcall(function() regenToggle:Set(state) end)
+			syncing = false
+		end
+	end
+
+	local function fireRegen()
+		local remote = RS:FindFirstChild("AdminRegenEvent")
+		if remote then remote:FireServer(regen.On, regen.Rate) end
+	end
+
+	local function startRegen()
+		regen.On = true
+		fireRegen()
+		syncRegen(true)
+	end
+
+	local function stopRegen(fromUI)
+		regen.On = false
+		fireRegen()
+		if not fromUI then syncRegen(false) end
+	end
+
+	local function toggleRegen()
+		if regen.On then stopRegen() else startRegen() end
+	end
+
+	RunService.Heartbeat:Connect(function(dt)
+		if not regen.On then return end
+		local char = lp.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		if hum and hum.Health > 0 and hum.Health < hum.MaxHealth then
+			hum.Health = math.min(hum.MaxHealth, hum.Health + regen.Rate * dt)
+		end
+	end)
+
+	-- ========= VELOCIDADE (correr rápido) =========
+	local speed = { On = false, Value = 50, orig = 16, conn = nil, hb = nil }
+
+	local function syncSpeed(state)
+		if speedToggle then
+			syncing = true
+			pcall(function() speedToggle:Set(state) end)
+			syncing = false
+		end
+	end
+
+	local function getHum()
+		local char = lp.Character
+		return char and char:FindFirstChildOfClass("Humanoid")
+	end
+
+	local function releaseSpeed()
+		if speed.conn then speed.conn:Disconnect() speed.conn = nil end
+		if speed.hb then speed.hb:Disconnect() speed.hb = nil end
+	end
+
+	local function applySpeed()
+		releaseSpeed()
+		local hum = getHum()
+		if not hum then return end
+		hum.WalkSpeed = speed.Value
+
+		speed.conn = hum:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
+			if speed.On and hum.WalkSpeed ~= speed.Value then
+				hum.WalkSpeed = speed.Value
+			end
+		end)
+		speed.hb = RunService.Heartbeat:Connect(function()
+			if speed.On and hum.WalkSpeed ~= speed.Value then
+				hum.WalkSpeed = speed.Value
+			end
+		end)
+	end
+
+	local function startSpeed()
+		local hum = getHum()
+		if not speed.On and hum then
+			speed.orig = hum.WalkSpeed
+			if speed.orig >= speed.Value then speed.orig = 16 end
+		end
+		speed.On = true
+		applySpeed()
+		syncSpeed(true)
+	end
+
+	local function stopSpeed(fromUI)
+		speed.On = false
+		releaseSpeed() -- solta tudo ANTES de restaurar (evita o atraso)
+		local hum = getHum()
+		if hum then
+			hum.WalkSpeed = speed.orig
+			task.defer(function()
+				if not speed.On and hum and hum.Parent then
+					hum.WalkSpeed = speed.orig
+				end
+			end)
+		end
+		if not fromUI then syncSpeed(false) end
+	end
+
+	local function toggleSpeed()
+		if speed.On then stopSpeed() else startSpeed() end
+	end
+
+	lp.CharacterAdded:Connect(function(char)
+		if speed.On then
+			local hum = char:WaitForChild("Humanoid", 5)
+			if hum then
+				speed.orig = hum.WalkSpeed
+				applySpeed()
+			end
+		end
+	end)
+
+	-- ========= VOAR (personagem e veículo) =========
+	local fly = { On = false, Speed = 50 }
+	local bv, bg, flyTarget
+
+	local function syncFly(state)
+		if flyToggle then
+			syncing = true
+			pcall(function() flyToggle:Set(state) end)
+			syncing = false
+		end
+	end
+
+	local function detachFly()
+		if bv then bv:Destroy() bv = nil end
+		if bg then bg:Destroy() bg = nil end
+		flyTarget = nil
+	end
+
+	local function attachFly(target)
+		detachFly()
+		flyTarget = target
+
+		bv = Instance.new("BodyVelocity")
+		bv.MaxForce = Vector3.new(1e9, 1e9, 1e9)
+		bv.Velocity = Vector3.zero
+		bv.Parent = target
+
+		bg = Instance.new("BodyGyro")
+		bg.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
+		bg.P = 3e4
+		bg.D = 1e3
+		bg.CFrame = target.CFrame
+		bg.Parent = target
+	end
+
+	local function stopFly()
+		fly.On = false
+		detachFly()
+		local hum = getHum()
+		if hum then
+			hum.PlatformStand = false
+			hum.AutoRotate = true
+		end
+		syncFly(false)
+	end
+
+	local function startFly()
+		local hum = getHum()
+		if not hum or hum.Health <= 0 then
+			syncFly(false)
+			return
+		end
+		fly.On = true
+		syncFly(true)
+	end
+
+	local function toggleFly()
+		if fly.On then stopFly() else startFly() end
+	end
+
+	lp.CharacterAdded:Connect(function(char)
+		stopFly()
+		local hum = char:WaitForChild("Humanoid", 5)
+		if hum then hum.Died:Connect(stopFly) end
+	end)
+
+	-- ========= ATRAVESSAR PAREDE (noclip) =========
+	local noclip = { On = false }
+	local original = {}
+
+	local function syncNoclip(state)
+		if noclipToggle then
+			syncing = true
+			pcall(function() noclipToggle:Set(state) end)
+			syncing = false
+		end
+	end
+
+	local function stopNoclip()
+		noclip.On = false
+		for part, was in pairs(original) do
+			if part and part.Parent then
+				part.CanCollide = was
+			end
+		end
+		table.clear(original)
+		syncNoclip(false)
+	end
+
+	local function startNoclip()
+		noclip.On = true
+		syncNoclip(true)
+	end
+
+	local function toggleNoclip()
+		if noclip.On then stopNoclip() else startNoclip() end
+	end
+
+	local function getVehicle(seat)
+		local m = seat
+		while m.Parent and m.Parent ~= workspace do
+			m = m.Parent
+		end
+		return m
+	end
+
+	RunService.Stepped:Connect(function()
+		if not noclip.On then return end
+		local char = lp.Character
+		if not char then return end
+
+		local parts = {}
+		for _, p in ipairs(char:GetDescendants()) do
+			if p:IsA("BasePart") then table.insert(parts, p) end
+		end
+
+		local hum = char:FindFirstChildOfClass("Humanoid")
+		local seat = hum and hum.SeatPart
+		if seat then
+			for _, p in ipairs(seat:GetConnectedParts(true)) do
+				table.insert(parts, p)
+			end
+			table.insert(parts, seat)
+			for _, p in ipairs(getVehicle(seat):GetDescendants()) do
+				if p:IsA("BasePart") then table.insert(parts, p) end
+			end
+		end
+
+		for _, part in ipairs(parts) do
+			if original[part] == nil then
+				original[part] = part.CanCollide
+			end
+			part.CanCollide = false
+		end
+	end)
+
+	lp.CharacterAdded:Connect(function()
+		table.clear(original)
+		noclip.On = false
+		syncNoclip(false)
+	end)
+
+	-- ========= TELEPORTE PARA JOGADOR =========
+	local tp = { Selected = nil, Typed = "" }
+	local tpDropdown
+
+	local function playerNames()
+		local list = {}
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= lp then table.insert(list, p.Name) end
+		end
+		table.sort(list)
+		return list
+	end
+
+	local function findPlayer(text)
+		if not text or text == "" then return nil end
+		text = text:lower()
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= lp and (p.Name:lower() == text or p.DisplayName:lower() == text) then
+				return p
+			end
+		end
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= lp and (p.Name:lower():find(text, 1, true) or p.DisplayName:lower():find(text, 1, true)) then
+				return p
+			end
+		end
+		return nil
+	end
+
+	local function teleportTo(name)
+		local target = findPlayer(name)
+		if not target then
+			WindUI:Notify({ Title = "Teleporte", Content = "Jogador não encontrado.", Duration = 5 })
+			return
+		end
+		local tChar = target.Character
+		local tHrp = tChar and tChar:FindFirstChild("HumanoidRootPart")
+		local myChar = lp.Character
+		local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
+		if not (tHrp and myHrp) then
+			WindUI:Notify({ Title = "Teleporte", Content = "Esse jogador está sem personagem agora.", Duration = 5 })
+			return
+		end
+
+		local dest = tHrp.CFrame * CFrame.new(0, 3, 5)
+		local hum = myChar:FindFirstChildOfClass("Humanoid")
+		local seat = hum and hum.SeatPart
+		if seat then
+			local root = seat.AssemblyRootPart or seat
+			root.AssemblyLinearVelocity = Vector3.zero
+			root.CFrame = dest
+		else
+			myHrp.AssemblyLinearVelocity = Vector3.zero
+			myChar:PivotTo(dest)
+		end
+		WindUI:Notify({ Title = "Teleporte", Content = "Você foi até " .. target.DisplayName .. ".", Duration = 4 })
+	end
+
+	local function refreshDropdown()
+		if tpDropdown then
+			pcall(function() tpDropdown:Refresh(playerNames()) end)
+		end
+		if tp.Selected and not Players:FindFirstChild(tp.Selected) then
+			tp.Selected = nil
+		end
+	end
+
+	Players.PlayerAdded:Connect(function() task.wait(0.5) refreshDropdown() end)
+	Players.PlayerRemoving:Connect(function() task.wait(0.5) refreshDropdown() end)
+
+	-- ========= MODO FPS (otimização) =========
+	local fps = { On = false, Ultra = false, token = 0, conns = {}, quality = nil, shadows = nil }
+	fps.saved = setmetatable({}, { __mode = "k" }) -- [instância] = { propriedade = valor original }
+
+	local function fpsSet(inst, prop, value)
+		local t = fps.saved[inst]
+		if not t then
+			t = {}
+			fps.saved[inst] = t
+		end
+		if t[prop] == nil then
+			t[prop] = inst[prop] -- guarda o valor original uma vez só
+		end
+		inst[prop] = value
+	end
+
+	local function fpsApplyOne(inst)
+		pcall(function()
+			if inst:IsA("Terrain") then
+				fpsSet(inst, "WaterWaveSize", 0)
+				fpsSet(inst, "WaterWaveSpeed", 0)
+				fpsSet(inst, "WaterReflectance", 0)
+			elseif inst:IsA("BasePart") then
+				fpsSet(inst, "Material", Enum.Material.SmoothPlastic)
+				fpsSet(inst, "Reflectance", 0)
+				fpsSet(inst, "CastShadow", false)
+				if fps.Ultra and inst:IsA("MeshPart") then
+					fpsSet(inst, "TextureID", "")
+				end
+			elseif inst:IsA("ParticleEmitter") or inst:IsA("Trail") or inst:IsA("Beam")
+				or inst:IsA("Fire") or inst:IsA("Smoke") or inst:IsA("Sparkles") then
+				fpsSet(inst, "Enabled", false)
+			elseif inst:IsA("BloomEffect") or inst:IsA("BlurEffect") or inst:IsA("SunRaysEffect")
+				or inst:IsA("ColorCorrectionEffect") or inst:IsA("DepthOfFieldEffect") then
+				fpsSet(inst, "Enabled", false)
+			elseif inst:IsA("Atmosphere") then
+				fpsSet(inst, "Density", 0)
+			elseif fps.Ultra and (inst:IsA("Decal") or inst:IsA("Texture")) then
+				fpsSet(inst, "Transparency", 1)
+			elseif fps.Ultra and inst:IsA("SpecialMesh") then
+				fpsSet(inst, "TextureId", "")
+			end
+		end)
+	end
+
+	local function fpsRestore()
+		fps.token += 1 -- cancela qualquer aplicação em andamento
+		for _, c in ipairs(fps.conns) do c:Disconnect() end
+		fps.conns = {}
+
+		for inst, props in pairs(fps.saved) do
+			if inst and inst.Parent then
+				for prop, val in pairs(props) do
+					pcall(function() inst[prop] = val end)
+				end
+			end
+		end
+		table.clear(fps.saved)
+
+		pcall(function()
+			if fps.shadows ~= nil then Lighting.GlobalShadows = fps.shadows end
+			if fps.quality ~= nil then settings().Rendering.QualityLevel = fps.quality end
+		end)
+		fps.shadows = nil
+		fps.quality = nil
+	end
+
+	local function fpsApply()
+		fps.token += 1
+		local myToken = fps.token
+
+		pcall(function()
+			if fps.shadows == nil then fps.shadows = Lighting.GlobalShadows end
+			if fps.quality == nil then fps.quality = settings().Rendering.QualityLevel end
+			Lighting.GlobalShadows = false
+			settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+		end)
+
+		-- novos objetos que aparecerem também são otimizados
+		for _, root in ipairs({ workspace, Lighting }) do
+			table.insert(fps.conns, root.DescendantAdded:Connect(function(inst)
+				if fps.On then fpsApplyOne(inst) end
+			end))
+		end
+
+		-- aplica nos objetos existentes aos poucos, sem travar o jogo
+		task.spawn(function()
+			local n = 0
+			for _, root in ipairs({ workspace, Lighting }) do
+				for _, inst in ipairs(root:GetDescendants()) do
+					if fps.token ~= myToken then return end
+					fpsApplyOne(inst)
+					n += 1
+					if n % 300 == 0 then task.wait() end
+				end
+			end
+		end)
+	end
+
+	local function setFpsMode(state)
+		if state == fps.On then return end
+		fps.On = state
+		if state then fpsApply() else fpsRestore() end
+	end
+
+	local function setFpsUltra(state)
+		fps.Ultra = state
+		if fps.On then
+			-- reaplica com a nova opção
+			fpsRestore()
+			fpsApply()
+		end
+	end
+
+	-- ========= ATUALIZAÇÃO (todo quadro) =========
+	RunService.RenderStepped:Connect(function(dt)
+		local myChar = lp.Character
+		local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
+		local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
+
+		-- Voar
+		if fly.On and myHrp and myHum then
+			local seat = myHum.SeatPart
+
+			if seat then
+				detachFly()
+				myHum.PlatformStand = false
+
+				local root = seat.AssemblyRootPart or seat
+				local dir = Vector3.zero
+				if UIS:IsKeyDown(Enum.KeyCode.W) then dir += cam.CFrame.LookVector end
+				if UIS:IsKeyDown(Enum.KeyCode.S) then dir -= cam.CFrame.LookVector end
+				if UIS:IsKeyDown(Enum.KeyCode.D) then dir += cam.CFrame.RightVector end
+				if UIS:IsKeyDown(Enum.KeyCode.A) then dir -= cam.CFrame.RightVector end
+				if UIS:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.yAxis end
+				if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then dir -= Vector3.yAxis end
+
+				root.AssemblyLinearVelocity = Vector3.zero
+				root.AssemblyAngularVelocity = Vector3.zero
+
+				local cf = root.CFrame
+				local yaw = 0
+				if UIS:IsKeyDown(Enum.KeyCode.Q) then yaw += 1 end
+				if UIS:IsKeyDown(Enum.KeyCode.E) then yaw -= 1 end
+				if yaw ~= 0 then
+					cf = CFrame.new(cf.Position) * CFrame.Angles(0, yaw * 2 * dt, 0) * cf.Rotation
+				end
+
+				root.CFrame = cf + dir * fly.Speed * dt
+			else
+				if myHrp ~= flyTarget or not bv or not bv.Parent then
+					attachFly(myHrp)
+				end
+				myHum.PlatformStand = true
+				myHum.AutoRotate = false
+
+				local move = cam.CFrame:VectorToObjectSpace(myHum.MoveDirection)
+				local dir = cam.CFrame.RightVector * move.X + cam.CFrame.LookVector * -move.Z
+				if UIS:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.yAxis end
+				if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then dir -= Vector3.yAxis end
+
+				bv.Velocity = dir * fly.Speed
+
+				local look = cam.CFrame.LookVector
+				local flat = Vector3.new(look.X, 0, look.Z)
+				if flat.Magnitude > 0.01 then
+					bg.CFrame = CFrame.lookAt(myHrp.Position, myHrp.Position + flat)
+				end
+			end
+		elseif not fly.On and flyTarget then
+			detachFly()
+		end
+
+		-- ESP
+		for player, o in pairs(objects) do
+			if not (o.hrp and o.hrp.Parent) then
+				clear(player)
+			else
+				o.box.Visible = settings.Caixa
+				o.gui.Enabled = settings.Nome or settings.Vida
+
+				o.name.Visible = settings.Nome
+				o.hp.Visible = settings.Vida
+
+				local hum = o.hum
+				o.hp.Text = ("Vida: %d/%d"):format(math.floor(hum.Health), math.floor(hum.MaxHealth))
+				local pct = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
+				o.hp.TextColor3 = Color3.fromRGB(255, 60, 60):Lerp(Color3.fromRGB(80, 255, 80), pct)
+			end
+		end
+	end)
+
+	-- ========= TEMA VERMELHO / PRETO / BRANCO =========
+	local THEME_NAME = "VermelhoPreto"
+
+	pcall(function()
+		WindUI:AddTheme({
+			Name = THEME_NAME,
+			Accent = Color3.fromHex("#E11D1D"),
+			Dialog = Color3.fromHex("#140808"),
+			Outline = Color3.fromHex("#FFFFFF"),
+			Text = Color3.fromHex("#FFFFFF"),
+			Placeholder = Color3.fromHex("#9A8A8A"),
+			Background = Color3.fromHex("#0A0A0A"),
+			Button = Color3.fromHex("#2A0E0E"),
+			Icon = Color3.fromHex("#FF4040"),
+		})
+	end)
+
+	-- ========= INTERFACE (WindUI) =========
+	local Window = WindUI:CreateWindow({
+		Title = "Painel do Admin",
+		Icon = "shield",
+		Author = "por " .. CREATOR,
+		Folder = "PainelAdmin",
+		Size = UDim2.fromOffset(580, 460),
+		MinSize = Vector2.new(560, 350),
+		MaxSize = Vector2.new(850, 560),
+		ToggleKey = Enum.KeyCode.RightShift,
+		Transparent = false,
+		Theme = THEME_NAME,
+		Resizable = true,
+		SideBarWidth = 200,
+		HideSearchBar = true,
+		ScrollBarEnabled = false,
+		User = {
+			Enabled = true,
+			Anonymous = true,
+		},
+	})
+
+	pcall(function() WindUI:SetTheme(THEME_NAME) end)
+
+	-- Desativa o botão X (ele destruiria o menu e a bolinha não conseguiria reabrir).
+	-- Para fechar use o botão de minimizar ou a tecla RightShift.
+	pcall(function()
+		Window:DisableTopbarButtons({ "Close" })
+	end)
+
+	-- ========= FUNÇÕES AUXILIARES =========
+	local function copyYoutube()
+		local copied = false
+		if setclipboard then
+			copied = pcall(setclipboard, YOUTUBE)
+		end
+		WindUI:Notify({
+			Title = "Créditos - " .. CREATOR,
+			Content = copied and "Link do YouTube copiado! Cole no navegador." or ("Canal: " .. YOUTUBE),
+			Duration = 8,
+		})
+	end
+
+	local function showCredits()
+		WindUI:Notify({
+			Title = "Créditos",
+			Content = "Script feito por " .. CREATOR .. ". Canal: " .. YOUTUBE,
+			Duration = 8,
+		})
+	end
+
+	-- ========= BOTÕES NA BARRA SUPERIOR =========
+	pcall(function() Window:CreateTopbarButton("BtnYoutube", "youtube", copyYoutube, 990) end)
+	pcall(function() Window:CreateTopbarButton("BtnCreditos", "star", showCredits, 989) end)
+
+	-- ========= BOLINHA COM A LOGO (reserva: botão padrão com gradiente) =========
+	local hasLogo = LOGO_ID ~= ""
+	local logoImage = hasLogo and ("rbxassetid://" .. LOGO_ID) or ""
+
+	local bubbleGui = Instance.new("ScreenGui")
+	bubbleGui.Name = "AOI_Bubble"
+	bubbleGui.ResetOnSpawn = false
+	bubbleGui.DisplayOrder = 999
+	bubbleGui.Parent = (gethui and gethui()) or lp:WaitForChild("PlayerGui")
+
+	local bubble = Instance.new("ImageButton")
+	bubble.Size = UDim2.fromOffset(64, 64)
+	bubble.Position = UDim2.new(0, 20, 0.5, 0)
+	bubble.BackgroundColor3 = Color3.fromRGB(120, 0, 0)
+	bubble.Image = logoImage
+	bubble.ScaleType = Enum.ScaleType.Crop
+	bubble.AutoButtonColor = false
+	bubble.Visible = false
+	bubble.Parent = bubbleGui
+
+	Instance.new("UICorner", bubble).CornerRadius = UDim.new(1, 0)
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.new(1, 1, 1)
+	stroke.Thickness = 2
+	stroke.Parent = bubble
+
+	-- Sem logo: mostra a letra "A" com gradiente vermelho e preto
+	if not hasLogo then
+		bubble.BackgroundColor3 = Color3.new(1, 1, 1)
+
+		local grad = Instance.new("UIGradient")
+		grad.Color = ColorSequence.new(Color3.fromHex("FF0000"), Color3.fromHex("1A0000"))
+		grad.Rotation = 45
+		grad.Parent = bubble
+
+		local letter = Instance.new("TextLabel")
+		letter.Size = UDim2.fromScale(1, 1)
+		letter.BackgroundTransparency = 1
+		letter.Text = "A"
+		letter.Font = Enum.Font.GothamBlack
+		letter.TextSize = 28
+		letter.TextColor3 = Color3.new(1, 1, 1)
+		letter.Parent = bubble
+	end
+
+	local isOpen = true
+
+	local function openMenu()
+		pcall(function() Window:Open() end)
+		isOpen = true
+		bubble.Visible = false
+	end
+
+	local okOpen = pcall(function()
+		Window:OnOpen(function()
+			isOpen = true
+			bubble.Visible = false
+		end)
+	end)
+	local okClose = pcall(function()
+		Window:OnClose(function()
+			isOpen = false
+			bubble.Visible = true
+		end)
+	end)
+	local bubbleAtiva = okOpen and okClose
+
+	if bubbleAtiva then
+		pcall(function() Window:EditOpenButton({ Enabled = false }) end)
+	else
+		bubble.Visible = false
+		pcall(function()
+			Window:EditOpenButton({
+				Title = "Abrir Menu",
+				Icon = hasLogo and logoImage or "monitor",
+				CornerRadius = UDim.new(0, 16),
+				StrokeThickness = 2,
+				Color = ColorSequence.new(
+					Color3.fromHex("FF0000"),
+					Color3.fromHex("1A0000")
+				),
+				OnlyMobile = false,
+				Enabled = true,
+				Draggable = true,
+			})
+		end)
+	end
+
+	local dragging, dragStart, startPos, moved = false, nil, nil, false
+
+	bubble.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			moved = false
+			dragStart = input.Position
+			startPos = bubble.Position
+		end
+	end)
+
+	UIS.InputChanged:Connect(function(input)
+		if not dragging then return end
+		if input.UserInputType == Enum.UserInputType.MouseMovement
+			or input.UserInputType == Enum.UserInputType.Touch then
+			local delta = input.Position - dragStart
+			if delta.Magnitude > 6 then moved = true end
+			if moved then
+				bubble.Position = UDim2.new(
+					startPos.X.Scale, startPos.X.Offset + delta.X,
+					startPos.Y.Scale, startPos.Y.Offset + delta.Y
+				)
+			end
+		end
+	end)
+
+	UIS.InputEnded:Connect(function(input)
+		if not dragging then return end
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+			if not moved and bubbleAtiva then
+				openMenu()
+			end
+		end
+	end)
+
+	-- ========= ABA: ESP =========
+	local espTab = Window:Tab({ Title = "ESP (Ver Jogadores)", Icon = "eye" })
+
+	local espToggles = {
+		{ "Caixa", "Caixa", "Desenha uma caixa em volta de cada jogador. Aparece através das paredes." },
+		{ "Nome", "Nome do jogador", "Mostra o nome de cada jogador acima da cabeça." },
+		{ "Vida", "Vida do jogador", "Mostra a vida atual e máxima. Vai de vermelho (pouca) a verde (cheia)." },
+	}
+
+	for _, item in ipairs(espToggles) do
+		local key, label, desc = item[1], item[2], item[3]
+		espTab:Toggle({
+			Title = label,
+			Desc = desc,
+			Default = settings[key],
+			Callback = function(state)
+				settings[key] = state
+			end,
+		})
+	end
+
+	-- ========= ABA: TELEPORTE =========
+	local tpTab = Window:Tab({ Title = "Teleporte", Icon = "map-pin" })
+
+	pcall(function()
+		tpDropdown = tpTab:Dropdown({
+			Title = "Escolher jogador",
+			Desc = "Lista de jogadores do servidor. Atualiza quando alguém entra ou sai.",
+			Values = playerNames(),
+			Callback = function(value)
+				tp.Selected = value
+			end,
+		})
+	end)
+
+	tpTab:Button({
+		Title = "Teleportar para o jogador escolhido",
+		Desc = "Leva você até o jogador selecionado na lista (e o carro junto, se estiver sentado).",
+		Callback = function()
+			if not tp.Selected then
+				WindUI:Notify({ Title = "Teleporte", Content = "Escolha um jogador na lista primeiro.", Duration = 5 })
+				return
+			end
+			teleportTo(tp.Selected)
+		end,
+	})
+
+	pcall(function()
+		tpTab:Input({
+			Title = "Ou digite o nome",
+			Desc = "Aceita nome de usuário ou de exibição, mesmo parcial. Aperte Enter para teleportar.",
+			Placeholder = "Nome do jogador",
+			Callback = function(text)
+				tp.Typed = text
+				if text and text ~= "" then teleportTo(text) end
+			end,
+		})
+	end)
+
+	tpTab:Button({
+		Title = "Atualizar lista",
+		Desc = "Recarrega a lista de jogadores.",
+		Callback = refreshDropdown,
+	})
+
+	-- ========= ABA: REGENERAÇÃO DE VIDA =========
+	local vidaTab = Window:Tab({ Title = "Regenerar Vida", Icon = "heart" })
+
+	regenToggle = vidaTab:Toggle({
+		Title = "Regenerar vida (tecla V)",
+		Desc = "Sua vida sobe sozinha até o máximo. Continua ligada ao renascer e só desliga pelo toggle ou pela tecla V. Precisa da parte de servidor no seu jogo.",
+		Default = false,
+		Callback = function(state)
+			if syncing then return end
+			if state then startRegen() else stopRegen(true) end
+		end,
+	})
+
+	vidaTab:Slider({
+		Title = "Regeneração por segundo",
+		Desc = "Quanta vida você recupera a cada segundo (1 a 100).",
+		Value = { Min = REGEN_MIN, Max = REGEN_MAX, Default = 10 },
+		Callback = function(value)
+			regen.Rate = value
+			if regen.On then fireRegen() end
+		end,
+	})
+
+	vidaTab:Button({
+		Title = "Como funciona?",
+		Desc = "Explica a regeneração.",
+		Callback = function()
+			WindUI:Notify({
+				Title = "Regenerar vida",
+				Content = "O servidor confere se você é admin e cura sua vida aos poucos. Você ainda pode levar dano, e um dano muito grande de uma vez pode te matar.",
+				Duration = 8,
+			})
+		end,
+	})
+
+	-- ========= ABA: VELOCIDADE =========
+	local speedTab = Window:Tab({ Title = "Velocidade", Icon = "zap" })
+
+	speedToggle = speedTab:Toggle({
+		Title = "Correr rápido (tecla B)",
+		Desc = "Aumenta a velocidade do seu personagem. Ao desligar, volta ao normal na hora.",
+		Default = false,
+		Callback = function(state)
+			if syncing then return end
+			if state then startSpeed() else stopSpeed(true) end
+		end,
+	})
+
+	speedTab:Slider({
+		Title = "Velocidade de corrida",
+		Desc = "Escolha o quão rápido você corre. O normal do Roblox é 16.",
+		Value = { Min = 16, Max = 200, Default = 50 },
+		Callback = function(value)
+			speed.Value = value
+		end,
+	})
+
+	-- ========= ABA: VOAR =========
+	local flyTab = Window:Tab({ Title = "Voar", Icon = "bird" })
+
+	flyToggle = flyTab:Toggle({
+		Title = "Voar (tecla F)",
+		Desc = "Você voa na direção da câmera. A câmera fica livre, o personagem só gira na horizontal. Se estiver sentado em um carro, o carro voa junto.",
+		Default = false,
+		Callback = function(state)
+			if syncing then return end
+			if state then startFly() else stopFly() end
+		end,
+	})
+
+	flyTab:Slider({
+		Title = "Velocidade do voo",
+		Desc = "Escolha a velocidade com que você voa.",
+		Value = { Min = 10, Max = 300, Default = 50 },
+		Callback = function(value)
+			fly.Speed = value
+		end,
+	})
+
+	flyTab:Button({
+		Title = "Controles do voo",
+		Desc = "Mostra as teclas para voar.",
+		Callback = function()
+			WindUI:Notify({
+				Title = "Voar",
+				Content = "WASD move na direção da câmera. Espaço sobe e Ctrl esquerdo desce. No carro, Q e E giram o veículo. F liga e desliga.",
+				Duration = 8,
+			})
+		end,
+	})
+
+	-- ========= ABA: ATRAVESSAR PAREDE =========
+	local noclipTab = Window:Tab({ Title = "Atravessar Parede", Icon = "ghost" })
+
+	noclipToggle = noclipTab:Toggle({
+		Title = "Atravessar parede (tecla N)",
+		Desc = "Desliga a colisão do seu personagem (e do carro, se estiver sentado) para passar por paredes. Combine com o Voar para não cair pelo chão.",
+		Default = false,
+		Callback = function(state)
+			if syncing then return end
+			if state then startNoclip() else stopNoclip() end
+		end,
+	})
+
+	noclipTab:Button({
+		Title = "Dica para ver atrás das paredes",
+		Desc = "Como usar com o ESP.",
+		Callback = function()
+			WindUI:Notify({
+				Title = "Atravessar parede",
+				Content = "Ligue Atravessar Parede e Voar juntos. Assim você passa por tudo sem cair, e o ESP mostra quem está do outro lado.",
+				Duration = 8,
+			})
+		end,
+	})
+
+	-- ========= ABA: CONFIGURAÇÕES =========
+	local configTab = Window:Tab({ Title = "Configurações", Icon = "settings" })
+
+	configTab:Toggle({
+		Title = "Modo FPS",
+		Desc = "Deixa o jogo mais leve: tira sombras, brilho, reflexos, partículas e efeitos, e simplifica os materiais. Ao desligar, tudo volta ao normal.",
+		Default = false,
+		Callback = function(state)
+			setFpsMode(state)
+		end,
+	})
+
+	configTab:Toggle({
+		Title = "Texturas ultra leves",
+		Desc = "Remove também as texturas de malhas e decalques para ganhar ainda mais FPS. Use junto com o Modo FPS. Os objetos podem ficar lisos e sem desenho.",
+		Default = false,
+		Callback = function(state)
+			setFpsUltra(state)
+		end,
+	})
+
+	-- ========= ABA: CRÉDITOS =========
+	local creditsTab = Window:Tab({ Title = "Créditos", Icon = "star" })
+
+	local okParagraph = pcall(function()
+		creditsTab:Paragraph({
+			Title = "Criador: " .. CREATOR,
+			Desc = "Script feito por " .. CREATOR .. ".\nCanal do YouTube: " .. YOUTUBE,
+		})
+	end)
+
+	if not okParagraph then
+		creditsTab:Button({
+			Title = "Criador: " .. CREATOR,
+			Callback = function() end,
+		})
+	end
+
+	creditsTab:Button({
+		Title = "Copiar link do YouTube",
+		Desc = "Copia o link do canal do criador. Se não der para copiar, o link aparece em uma notificação.",
+		Callback = copyYoutube,
+	})
+
+	-- ========= TECLAS =========
+	UIS.InputBegan:Connect(function(input, gp)
+		if gp then return end
+		if input.KeyCode == Enum.KeyCode.F then
+			toggleFly()
+		elseif input.KeyCode == Enum.KeyCode.N then
+			toggleNoclip()
+		elseif input.KeyCode == Enum.KeyCode.V then
+			toggleRegen()
+		elseif input.KeyCode == Enum.KeyCode.B then
+			toggleSpeed()
+		end
+	end)
+end
