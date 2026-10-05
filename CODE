@@ -971,7 +971,7 @@ else
 	local vidaTab = Window:Tab({ Title = "Regenerar Vida", Icon = "heart" })
 
 	regenToggle = vidaTab:Toggle({
-		Title = "Regenerar vida (tecla V)",
+		Title = "Regenerar vida (tecla R)",
 		Desc = "Sua vida sobe sozinha até o máximo. Continua ligada ao renascer e só desliga pelo toggle ou pela tecla V. Precisa da parte de servidor no seu jogo.",
 		Default = false,
 		Callback = function(state)
@@ -1006,7 +1006,7 @@ else
 	local speedTab = Window:Tab({ Title = "Velocidade", Icon = "zap" })
 
 	speedToggle = speedTab:Toggle({
-		Title = "Correr rápido (tecla B)",
+		Title = "Correr rápido (tecla T)",
 		Desc = "Aumenta a velocidade do seu personagem. Ao desligar, volta ao normal na hora.",
 		Default = false,
 		Callback = function(state)
@@ -1028,7 +1028,7 @@ else
 	local flyTab = Window:Tab({ Title = "Voar", Icon = "bird" })
 
 	flyToggle = flyTab:Toggle({
-		Title = "Voar (tecla F)",
+		Title = "Voar (tecla V)",
 		Desc = "Você voa na direção da câmera. A câmera fica livre, o personagem só gira na horizontal. Se estiver sentado em um carro, o carro voa junto.",
 		Default = false,
 		Callback = function(state)
@@ -1062,7 +1062,7 @@ else
 	local noclipTab = Window:Tab({ Title = "Atravessar Parede", Icon = "ghost" })
 
 	noclipToggle = noclipTab:Toggle({
-		Title = "Atravessar parede (tecla N)",
+		Title = "Atravessar parede (tecla G)",
 		Desc = "Desliga a colisão do seu personagem (e do carro, se estiver sentado) para passar por paredes. Combine com o Voar para não cair pelo chão.",
 		Default = false,
 		Callback = function(state)
@@ -1130,13 +1130,13 @@ else
 	-- ========= TECLAS =========
 	UIS.InputBegan:Connect(function(input, gp)
 		if gp then return end
-		if input.KeyCode == Enum.KeyCode.F then
+		if input.KeyCode == Enum.KeyCode.V then
 			toggleFly()
-		elseif input.KeyCode == Enum.KeyCode.N then
+		elseif input.KeyCode == Enum.KeyCode.G then
 			toggleNoclip()
-		elseif input.KeyCode == Enum.KeyCode.V then
+		elseif input.KeyCode == Enum.KeyCode.R then
 			toggleRegen()
-		elseif input.KeyCode == Enum.KeyCode.B then
+		elseif input.KeyCode == Enum.KeyCode.T then
 			toggleSpeed()
 		end
 	end)
