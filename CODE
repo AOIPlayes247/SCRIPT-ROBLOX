@@ -972,7 +972,7 @@ else
 
 	regenToggle = vidaTab:Toggle({
 		Title = "Regenerar vida (tecla R)",
-		Desc = "Sua vida sobe sozinha até o máximo. Continua ligada ao renascer e só desliga pelo toggle ou pela tecla V. Precisa da parte de servidor no seu jogo.",
+		Desc = "Sua vida sobe sozinha até o máximo. Continua ligada ao renascer e só desliga pelo toggle ou pela tecla R. Precisa da parte de servidor no seu jogo.",
 		Default = false,
 		Callback = function(state)
 			if syncing then return end
