@@ -17,3 +17,11 @@ By: AOIofc1
 Prompt Para Fala pro CLaude Fazer O Script:
 
 Tem como vc a me ajuda a cria um script de highlight com caixas nomes das pessoas e a vida com as distancias delas e que da para ver atraves da parede fucional com team Check, uma interface feita por vc para trigger cada função e sempre-se lembre caso um jogador morrer recriar nele caso um sair ou morrer deletar no dele e caso um novo entrar criar no dele, apenas. Algo rapido e fucional e vc pode me enviar por aqui mesmo me enviar, não precisa ser baixável e nem por link externo, combinado.
+
+
+
+Para Fazer o HUB:
+
+https://footagesus.github.io/WindUI-Docs/docs/window#enable
+
+https://footagesus.github.io/WindUI-Docs/docs/load-windui#load-methods
