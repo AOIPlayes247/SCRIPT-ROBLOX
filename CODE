@@ -47,39 +47,7 @@ if RunService:IsServer() then
 		end
 	end)
 
-	-- mantém os personagens de todos carregados para os admins (StreamingEnabled)
-	local function persistFor(admin, char)
-		pcall(function()
-			char.ModelStreamingMode = Enum.ModelStreamingMode.PersistentPerPlayer
-			char:AddPersistentPlayer(admin)
-		end)
-	end
-
-	local function watchCharacters(p)
-		p.CharacterAdded:Connect(function(char)
-			for admin in pairs(state) do
-				if admin.Parent then persistFor(admin, char) end
-			end
-		end)
-		if p.Character then
-			for admin in pairs(state) do
-				if admin.Parent then persistFor(admin, p.Character) end
-			end
-		end
-	end
-
-	local function setupAdminView(admin)
-		if not ADMINS[admin.UserId] then return end
-		for _, p in ipairs(Players:GetPlayers()) do
-			if p.Character then persistFor(admin, p.Character) end
-		end
-	end
-
-	Players.PlayerAdded:Connect(function(p)
-		setup(p)
-		watchCharacters(p)
-		setupAdminView(p)
-	end)
+	Players.PlayerAdded:Connect(setup)
 	Players.PlayerRemoving:Connect(function(player)
 		local s = state[player]
 		if s and s.conn then s.conn:Disconnect() end
@@ -87,8 +55,6 @@ if RunService:IsServer() then
 	end)
 	for _, p in ipairs(Players:GetPlayers()) do
 		setup(p)
-		watchCharacters(p)
-		setupAdminView(p)
 	end
 
 else
@@ -117,6 +83,8 @@ else
 		Vida = true,
 		Distancia = true, -- mostra a distância até o jogador
 		Dist = 5000,      -- distância máxima do ESP (studs)
+		Team = false,     -- esconde o ESP de quem é do seu time
+		Visib = true,     -- caixa verde (visível) / vermelha (atrás da parede)
 	}
 
 	local objects = {}
@@ -128,9 +96,37 @@ else
 	container.Parent = cam
 
 	-- ========= ESP: CRIAR / REMOVER =========
+	local buildToken = {} -- evita ESP duplicado se o jogador renascer rápido
+
+	local COR_VISIVEL = Color3.fromRGB(80, 255, 80)
+	local COR_ESCONDIDO = Color3.fromRGB(255, 60, 60)
+
+	local visParams = RaycastParams.new()
+	visParams.FilterType = Enum.RaycastFilterType.Exclude
+
+	-- true se há linha de visão da câmera até a parte (ignora vidro e partes sem colisão)
+	local function canSee(part, char)
+		local origin = cam.CFrame.Position
+		local filter = { char }
+		if lp.Character then table.insert(filter, lp.Character) end
+		for _ = 1, 4 do
+			visParams.FilterDescendantsInstances = filter
+			local hit = workspace:Raycast(origin, part.Position - origin, visParams)
+			if not hit then return true end
+			local inst = hit.Instance
+			if inst.Transparency >= 0.9 or not inst.CanCollide then
+				table.insert(filter, inst)
+			else
+				return false
+			end
+		end
+		return false
+	end
+
 	local function clear(player)
 		local o = objects[player]
 		if o then
+			if o.diedConn then o.diedConn:Disconnect() end
 			o.folder:Destroy()
 			objects[player] = nil
 		end
@@ -153,23 +149,30 @@ else
 		clear(player)
 		if player == lp then return end
 
+		buildToken[player] = (buildToken[player] or 0) + 1
+		local myToken = buildToken[player]
+
 		local hrp = char:WaitForChild("HumanoidRootPart", 5)
 		local hum = char:WaitForChild("Humanoid", 5)
 		local head = char:WaitForChild("Head", 5)
 		if not (hrp and hum and head) then return end
 		if hum.Health <= 0 then return end
 
+		-- o jogador renasceu ou saiu enquanto esperava: cancela
+		if buildToken[player] ~= myToken or not char.Parent then return end
+
 		local folder = Instance.new("Folder")
 		folder.Name = player.Name
 		folder.Parent = container
 
+		-- caixa: o tamanho é ajustado ao corpo real de tempos em tempos
 		local box = Instance.new("BoxHandleAdornment")
 		box.Adornee = hrp
 		box.Size = Vector3.new(4, 5.5, 1.5)
 		box.AlwaysOnTop = true
 		box.ZIndex = 5
 		box.Transparency = 0.6
-		box.Color3 = Color3.fromRGB(255, 60, 60)
+		box.Color3 = COR_ESCONDIDO
 		box.Parent = folder
 
 		local gui = Instance.new("BillboardGui")
@@ -191,13 +194,15 @@ else
 		local distL = makeLabel(gui, 3, Color3.fromRGB(255, 220, 90))
 		nameL.Text = player.DisplayName
 
-		objects[player] = {
-			folder = folder, box = box, gui = gui,
+		local o = {
+			folder = folder, box = box, gui = gui, char = char,
 			name = nameL, hp = hpL, dist = distL, hrp = hrp, hum = hum,
+			lastVis = 0, lastBox = 0, visible = true,
 		}
+		objects[player] = o
 
 		-- Morreu: deleta (recria no CharacterAdded ao renascer)
-		hum.Died:Connect(function()
+		o.diedConn = hum.Died:Connect(function()
 			clear(player)
 		end)
 	end
@@ -208,6 +213,7 @@ else
 			build(player, char)
 		end)
 		player.CharacterRemoving:Connect(function()
+			buildToken[player] = (buildToken[player] or 0) + 1
 			clear(player)
 		end)
 		if player.Character then
@@ -215,11 +221,16 @@ else
 		end
 	end
 
-	Players.PlayerAdded:Connect(track)      -- entrou: cria
-	Players.PlayerRemoving:Connect(clear)   -- saiu: deleta
+	Players.PlayerAdded:Connect(track)      -- entrou: cria o ESP dele
+	Players.PlayerRemoving:Connect(function(player)
+		buildToken[player] = (buildToken[player] or 0) + 1
+		clear(player)
+		buildToken[player] = nil
+	end)
 	for _, p in ipairs(Players:GetPlayers()) do track(p) end
 
 	-- ========= REGENERAÇÃO DE VIDA =========
+	-- (a cura de verdade é feita pelo servidor; o cliente só avisa)
 	local regen = { On = false, Rate = 10 }
 
 	local function syncRegen(state)
@@ -250,15 +261,6 @@ else
 	local function toggleRegen()
 		if regen.On then stopRegen() else startRegen() end
 	end
-
-	RunService.Heartbeat:Connect(function(dt)
-		if not regen.On then return end
-		local char = lp.Character
-		local hum = char and char:FindFirstChildOfClass("Humanoid")
-		if hum and hum.Health > 0 and hum.Health < hum.MaxHealth then
-			hum.Health = math.min(hum.MaxHealth, hum.Health + regen.Rate * dt)
-		end
-	end)
 
 	-- ========= VELOCIDADE (correr rápido) =========
 	local speed = { On = false, Value = 50, orig = 16, conn = nil, hb = nil }
@@ -409,6 +411,10 @@ else
 	local noclip = { On = false }
 	local original = {}
 
+	-- lista em cache (não varre o personagem/carro todo quadro)
+	local noclipParts = {}
+	local noclipSeat, noclipClock = nil, 0
+
 	local function syncNoclip(state)
 		if noclipToggle then
 			syncing = true
@@ -425,11 +431,15 @@ else
 			end
 		end
 		table.clear(original)
+		table.clear(noclipParts)
+		noclipSeat = nil -- força reconstruir a lista na próxima vez que ligar
 		syncNoclip(false)
 	end
 
 	local function startNoclip()
 		noclip.On = true
+		noclipSeat = nil
+		noclipClock = 999 -- reconstrói a lista no primeiro quadro
 		syncNoclip(true)
 	end
 
@@ -445,38 +455,57 @@ else
 		return m
 	end
 
-	RunService.Stepped:Connect(function()
+	local function rebuildNoclipParts(seat)
+		table.clear(noclipParts)
+		local char = lp.Character
+		if char then
+			for _, p in ipairs(char:GetDescendants()) do
+				if p:IsA("BasePart") then noclipParts[#noclipParts + 1] = p end
+			end
+		end
+		if seat then
+			noclipParts[#noclipParts + 1] = seat
+			for _, p in ipairs(seat:GetConnectedParts(true)) do
+				noclipParts[#noclipParts + 1] = p
+			end
+			-- só usa o modelo inteiro se ele for pequeno (evita varrer o mapa)
+			local model = getVehicle(seat)
+			if model ~= workspace and #model:GetChildren() < 200 then
+				for _, p in ipairs(model:GetDescendants()) do
+					if p:IsA("BasePart") then noclipParts[#noclipParts + 1] = p end
+				end
+			end
+		end
+	end
+
+	RunService.Stepped:Connect(function(_, dt)
 		if not noclip.On then return end
 		local char = lp.Character
 		if not char then return end
 
-		local parts = {}
-		for _, p in ipairs(char:GetDescendants()) do
-			if p:IsA("BasePart") then table.insert(parts, p) end
-		end
-
 		local hum = char:FindFirstChildOfClass("Humanoid")
 		local seat = hum and hum.SeatPart
-		if seat then
-			for _, p in ipairs(seat:GetConnectedParts(true)) do
-				table.insert(parts, p)
-			end
-			table.insert(parts, seat)
-			for _, p in ipairs(getVehicle(seat):GetDescendants()) do
-				if p:IsA("BasePart") then table.insert(parts, p) end
-			end
+
+		-- só reconstrói a lista se mudou de assento ou a cada 1 segundo
+		noclipClock += dt
+		if seat ~= noclipSeat or noclipClock > 1 then
+			noclipSeat, noclipClock = seat, 0
+			rebuildNoclipParts(seat)
 		end
 
-		for _, part in ipairs(parts) do
-			if original[part] == nil then
-				original[part] = part.CanCollide
+		for i = 1, #noclipParts do
+			local part = noclipParts[i]
+			if part.CanCollide then
+				if original[part] == nil then original[part] = true end
+				part.CanCollide = false
 			end
-			part.CanCollide = false
 		end
 	end)
 
 	lp.CharacterAdded:Connect(function()
 		table.clear(original)
+		table.clear(noclipParts)
+		noclipSeat = nil
 		noclip.On = false
 		syncNoclip(false)
 	end)
@@ -539,6 +568,7 @@ else
 		WindUI:Notify({ Title = "Teleporte", Content = "Você foi até " .. target.DisplayName .. ".", Duration = 4 })
 	end
 
+	-- atualiza a lista só quando você clica em "Atualizar lista"
 	local function refreshDropdown()
 		if tpDropdown then
 			pcall(function() tpDropdown:Refresh(playerNames()) end)
@@ -547,9 +577,6 @@ else
 			tp.Selected = nil
 		end
 	end
-
-	Players.PlayerAdded:Connect(function() task.wait(0.5) refreshDropdown() end)
-	Players.PlayerRemoving:Connect(function() task.wait(0.5) refreshDropdown() end)
 
 	-- ========= MODO FPS (otimização) =========
 	local fps = { On = false, Ultra = false, token = 0, conns = {}, quality = nil, shadows = nil }
@@ -668,15 +695,26 @@ else
 	-- ========= MIRA (círculo que segue o mouse) =========
 	local aim = {
 		On = false,
-		Radius = 120,       -- tamanho do círculo (pixels)
-		Team = true,        -- ignora jogadores do seu time
-		Wall = true,        -- ignora jogadores atrás de paredes
-		Target = nil,       -- jogador travado
-		Ignore = nil,       -- jogador solto (só trava de novo depois que sair do círculo)
-		Flick = 0,          -- quanto você mexeu o mouse pro lado
-		FlickLimit = 150,   -- quanto precisa virar pro lado pra soltar a trava
+		Radius = 120,          -- tamanho do círculo (pixels)
+		Team = true,           -- ignora jogadores do seu time
+		Wall = true,           -- ignora jogadores atrás de paredes
+		HoldRMB = false,       -- só trava segurando o botão direito do mouse
+		ShowDot = true,        -- mostra um ponto onde a câmera está mirando
+		Part = "HumanoidRootPart", -- parte do corpo mirada
+		Smooth = 0,            -- 0 = instantâneo; maior = mais suave
+		Predict = 0,           -- antecipação do movimento, em milissegundos
+		MaxDist = 2000,        -- distância máxima do alvo (studs)
+		Target = nil,          -- jogador travado
+		Ignore = nil,          -- jogador solto (só trava de novo depois que sair do círculo)
+		Flick = 0,             -- quanto você mexeu o mouse pro lado
+		FlickLimit = 150,      -- quanto precisa virar pro lado pra soltar a trava
 	}
 	local aimToggle
+
+	-- relógios para não fazer raycast/busca todo quadro (evita travar)
+	local aimWallClock, aimSearchClock = 0, 0
+	local AIM_WALL_INTERVAL = 0.1
+	local AIM_SEARCH_INTERVAL = 0.05
 
 	local aimGui = Instance.new("ScreenGui")
 	aimGui.Name = "AOI_AimCircle"
@@ -697,6 +735,16 @@ else
 	circleStroke.Color = Color3.new(1, 1, 1)
 	circleStroke.Parent = circle
 
+	-- ponto que mostra exatamente onde a câmera está mirando
+	local dot = Instance.new("Frame")
+	dot.AnchorPoint = Vector2.new(0.5, 0.5)
+	dot.Size = UDim2.fromOffset(8, 8)
+	dot.BackgroundColor3 = Color3.fromRGB(255, 60, 60)
+	dot.BorderSizePixel = 0
+	dot.Visible = false
+	dot.Parent = aimGui
+	Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
+
 	local function syncAim(state)
 		if aimToggle then
 			syncing = true
@@ -708,7 +756,7 @@ else
 	local wallParams = RaycastParams.new()
 	wallParams.FilterType = Enum.RaycastFilterType.Exclude
 
-	-- devolve hrp, humanoid, character se o jogador for um alvo válido
+	-- devolve a parte mirada, o humanoid e o personagem se o jogador for um alvo válido
 	local function getTargetParts(p)
 		if not p or p == lp then return end
 		if aim.Team and p.Team ~= nil and p.Team == lp.Team then return end
@@ -716,20 +764,47 @@ else
 		local hum = char and char:FindFirstChildOfClass("Humanoid")
 		local hrp = char and char:FindFirstChild("HumanoidRootPart")
 		if not (hum and hrp) or hum.Health <= 0 then return end
-		return hrp, hum, char
+
+		local part = hrp
+		if aim.Part == "Head" then
+			part = char:FindFirstChild("Head") or hrp
+		elseif aim.Part == "Torso" then
+			part = char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso") or hrp
+		end
+
+		if (part.Position - cam.CFrame.Position).Magnitude > aim.MaxDist then return end
+		return part, hum, char
 	end
 
-	local function hasWall(hrp, char)
+	-- wall check: atravessa partes transparentes ou sem colisão (grama, vidro, etc.)
+	local function hasWall(part, char)
 		if not aim.Wall then return false end
-		wallParams.FilterDescendantsInstances = { lp.Character, char }
 		local origin = cam.CFrame.Position
-		local hit = workspace:Raycast(origin, hrp.Position - origin, wallParams)
-		return hit ~= nil
+		local filter = { char }
+		if lp.Character then table.insert(filter, lp.Character) end
+		for _ = 1, 4 do
+			wallParams.FilterDescendantsInstances = filter
+			local hit = workspace:Raycast(origin, part.Position - origin, wallParams)
+			if not hit then return false end
+			local inst = hit.Instance
+			if inst.Transparency >= 0.9 or not inst.CanCollide then
+				table.insert(filter, inst)
+			else
+				return true
+			end
+		end
+		return true
+	end
+
+	-- ponto final da mira (com antecipação do movimento do alvo)
+	local function aimPoint(part)
+		if aim.Predict <= 0 then return part.Position end
+		return part.Position + part.AssemblyLinearVelocity * (aim.Predict / 1000)
 	end
 
 	-- distância do centro do círculo (mouse) até o jogador na tela
-	local function screenDist(hrp, mouse)
-		local pos, onScreen = cam:WorldToViewportPoint(hrp.Position)
+	local function screenDist(part, mouse)
+		local pos, onScreen = cam:WorldToViewportPoint(part.Position)
 		if not onScreen then return nil end
 		return (Vector2.new(pos.X, pos.Y) - mouse).Magnitude
 	end
@@ -750,40 +825,62 @@ else
 	end)
 
 	RunService:BindToRenderStep("AOI_Aim", Enum.RenderPriority.Camera.Value + 1, function(dt)
-		circle.Visible = aim.On
-		if not aim.On then return end
+		-- desligada: não faz nada (barato)
+		if not aim.On then
+			if circle.Visible then circle.Visible = false end
+			if dot.Visible then dot.Visible = false end
+			return
+		end
+		circle.Visible = true
 
 		local mouse = UIS:GetMouseLocation()
 		circle.Position = UDim2.fromOffset(mouse.X, mouse.Y)
 		circle.Size = UDim2.fromOffset(aim.Radius * 2, aim.Radius * 2)
 		aim.Flick = math.max(0, aim.Flick - 600 * dt) -- o movimento "esfria" com o tempo
+		aimWallClock += dt
+		aimSearchClock += dt
+
+		-- modo "segurar botão direito": sem o botão, não trava
+		if aim.HoldRMB and not UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
+			if aim.Target then releaseAim(false) end
+			dot.Visible = false
+			circleStroke.Color = Color3.new(1, 1, 1)
+			return
+		end
 
 		-- jogador solto só pode ser travado de novo depois de sair do círculo
 		if aim.Ignore then
-			local hrp = getTargetParts(aim.Ignore)
-			local d = hrp and screenDist(hrp, mouse)
+			local part = getTargetParts(aim.Ignore)
+			local d = part and screenDist(part, mouse)
 			if not d or d > aim.Radius then aim.Ignore = nil end
 		end
 
-		-- mantém ou solta o alvo atual
+		-- mantém ou solta o alvo atual (wall check só 10x por segundo)
 		if aim.Target then
-			local hrp, _, char = getTargetParts(aim.Target)
-			if not hrp or hasWall(hrp, char) then
+			local part, _, char = getTargetParts(aim.Target)
+			if not part then
 				releaseAim(false)
-			elseif aim.Flick > aim.FlickLimit then
-				releaseAim(true)
+			else
+				if aimWallClock >= AIM_WALL_INTERVAL then
+					aimWallClock = 0
+					if hasWall(part, char) then releaseAim(false) end
+				end
+				if aim.Target and aim.Flick > aim.FlickLimit then
+					releaseAim(true)
+				end
 			end
 		end
 
-		-- procura um novo alvo dentro do círculo (o mais perto do mouse)
-		if not aim.Target then
+		-- procura um novo alvo dentro do círculo (20x por segundo, o mais perto do mouse)
+		if not aim.Target and aimSearchClock >= AIM_SEARCH_INTERVAL then
+			aimSearchClock = 0
 			local best, bestDist
 			for _, p in ipairs(Players:GetPlayers()) do
 				if p ~= aim.Ignore then
-					local hrp, _, char = getTargetParts(p)
-					if hrp then
-						local d = screenDist(hrp, mouse)
-						if d and d <= aim.Radius and (not bestDist or d < bestDist) and not hasWall(hrp, char) then
+					local part, _, char = getTargetParts(p)
+					if part then
+						local d = screenDist(part, mouse)
+						if d and d <= aim.Radius and (not bestDist or d < bestDist) and not hasWall(part, char) then
 							best, bestDist = p, d
 						end
 					end
@@ -792,13 +889,29 @@ else
 			aim.Target = best
 		end
 
-		-- trava a câmera no HumanoidRootPart
+		-- trava a câmera na parte escolhida
 		local locked = false
+		dot.Visible = false
 		if aim.Target then
-			local hrp = getTargetParts(aim.Target)
-			if hrp then
-				cam.CFrame = CFrame.lookAt(cam.CFrame.Position, hrp.Position)
+			local part = getTargetParts(aim.Target)
+			if part then
+				local point = aimPoint(part)
+				local goal = CFrame.lookAt(cam.CFrame.Position, point)
+				if aim.Smooth <= 0 then
+					cam.CFrame = goal
+				else
+					local alpha = 1 - math.exp(-dt * 60 / aim.Smooth)
+					cam.CFrame = cam.CFrame:Lerp(goal, alpha)
+				end
 				locked = true
+
+				if aim.ShowDot then
+					local pos, onScreen = cam:WorldToViewportPoint(point)
+					if onScreen then
+						dot.Position = UDim2.fromOffset(pos.X, pos.Y)
+						dot.Visible = true
+					end
+				end
 			end
 		end
 		circleStroke.Color = locked and Color3.fromRGB(255, 60, 60) or Color3.new(1, 1, 1)
@@ -812,85 +925,137 @@ else
 		syncAim(aim.On)
 	end
 
-	-- ========= ATUALIZAÇÃO (todo quadro) =========
+	-- ========= VOAR: ATUALIZAÇÃO (todo quadro, só quando ligado) =========
 	RunService.RenderStepped:Connect(function(dt)
+		if not fly.On then
+			if flyTarget then detachFly() end
+			return
+		end
+
 		local myChar = lp.Character
 		local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
 		local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
+		if not (myHrp and myHum) then return end
 
-		-- Voar
-		if fly.On and myHrp and myHum then
-			local seat = myHum.SeatPart
+		local seat = myHum.SeatPart
 
-			if seat then
-				detachFly()
-				myHum.PlatformStand = false
-
-				local root = seat.AssemblyRootPart or seat
-				local dir = Vector3.zero
-				if UIS:IsKeyDown(Enum.KeyCode.W) then dir += cam.CFrame.LookVector end
-				if UIS:IsKeyDown(Enum.KeyCode.S) then dir -= cam.CFrame.LookVector end
-				if UIS:IsKeyDown(Enum.KeyCode.D) then dir += cam.CFrame.RightVector end
-				if UIS:IsKeyDown(Enum.KeyCode.A) then dir -= cam.CFrame.RightVector end
-				if UIS:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.yAxis end
-				if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then dir -= Vector3.yAxis end
-
-				root.AssemblyLinearVelocity = Vector3.zero
-				root.AssemblyAngularVelocity = Vector3.zero
-
-				local cf = root.CFrame
-				local yaw = 0
-				if UIS:IsKeyDown(Enum.KeyCode.Q) then yaw += 1 end
-				if UIS:IsKeyDown(Enum.KeyCode.E) then yaw -= 1 end
-				if yaw ~= 0 then
-					cf = CFrame.new(cf.Position) * CFrame.Angles(0, yaw * 2 * dt, 0) * cf.Rotation
-				end
-
-				root.CFrame = cf + dir * fly.Speed * dt
-			else
-				if myHrp ~= flyTarget or not bv or not bv.Parent then
-					attachFly(myHrp)
-				end
-				myHum.PlatformStand = true
-				myHum.AutoRotate = false
-
-				local move = cam.CFrame:VectorToObjectSpace(myHum.MoveDirection)
-				local dir = cam.CFrame.RightVector * move.X + cam.CFrame.LookVector * -move.Z
-				if UIS:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.yAxis end
-				if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then dir -= Vector3.yAxis end
-
-				bv.Velocity = dir * fly.Speed
-
-				local look = cam.CFrame.LookVector
-				local flat = Vector3.new(look.X, 0, look.Z)
-				if flat.Magnitude > 0.01 then
-					bg.CFrame = CFrame.lookAt(myHrp.Position, myHrp.Position + flat)
-				end
-			end
-		elseif not fly.On and flyTarget then
+		if seat then
 			detachFly()
-		end
+			myHum.PlatformStand = false
 
-		-- ESP
+			local root = seat.AssemblyRootPart or seat
+			local dir = Vector3.zero
+			if UIS:IsKeyDown(Enum.KeyCode.W) then dir += cam.CFrame.LookVector end
+			if UIS:IsKeyDown(Enum.KeyCode.S) then dir -= cam.CFrame.LookVector end
+			if UIS:IsKeyDown(Enum.KeyCode.D) then dir += cam.CFrame.RightVector end
+			if UIS:IsKeyDown(Enum.KeyCode.A) then dir -= cam.CFrame.RightVector end
+			if UIS:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.yAxis end
+			if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then dir -= Vector3.yAxis end
+
+			root.AssemblyLinearVelocity = Vector3.zero
+			root.AssemblyAngularVelocity = Vector3.zero
+
+			local cf = root.CFrame
+			local yaw = 0
+			if UIS:IsKeyDown(Enum.KeyCode.Q) then yaw += 1 end
+			if UIS:IsKeyDown(Enum.KeyCode.E) then yaw -= 1 end
+			if yaw ~= 0 then
+				cf = CFrame.new(cf.Position) * CFrame.Angles(0, yaw * 2 * dt, 0) * cf.Rotation
+			end
+
+			root.CFrame = cf + dir * fly.Speed * dt
+		else
+			if myHrp ~= flyTarget or not bv or not bv.Parent then
+				attachFly(myHrp)
+			end
+			myHum.PlatformStand = true
+			myHum.AutoRotate = false
+
+			local move = cam.CFrame:VectorToObjectSpace(myHum.MoveDirection)
+			local dir = cam.CFrame.RightVector * move.X + cam.CFrame.LookVector * -move.Z
+			if UIS:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.yAxis end
+			if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then dir -= Vector3.yAxis end
+
+			bv.Velocity = dir * fly.Speed
+
+			local look = cam.CFrame.LookVector
+			local flat = Vector3.new(look.X, 0, look.Z)
+			if flat.Magnitude > 0.01 then
+				bg.CFrame = CFrame.lookAt(myHrp.Position, myHrp.Position + flat)
+			end
+		end
+	end)
+
+	-- ========= ESP: ATUALIZAÇÃO LIMITADA =========
+	local ESP_INTERVAL = 0.15    -- atualiza ~7x por segundo
+	local VIS_INTERVAL = 0.4     -- checagem de parede por jogador
+	local VIS_MAX_PER_TICK = 2   -- máximo de raycasts por atualização
+	local BOX_INTERVAL = 2       -- recalcula o tamanho da caixa a cada 2 segundos
+	local espClock = 0
+
+	local function setText(label, text)
+		if label.Text ~= text then label.Text = text end
+	end
+
+	RunService.Heartbeat:Connect(function(dt)
+		espClock += dt
+		if espClock < ESP_INTERVAL then return end
+		espClock = 0
+
+		local now = os.clock()
+		local camPos = cam.CFrame.Position
+		local raysLeft = VIS_MAX_PER_TICK
+
 		for player, o in pairs(objects) do
-			if not (o.hrp and o.hrp.Parent) then
+			if not (o.hrp and o.hrp.Parent and o.char and o.char.Parent) then
 				clear(player)
 			else
-				local dist = (o.hrp.Position - cam.CFrame.Position).Magnitude
-				local inRange = dist <= settings.Dist
-
-				o.box.Visible = settings.Caixa and inRange
-				o.gui.Enabled = (settings.Nome or settings.Vida or settings.Distancia) and inRange
-
-				o.name.Visible = settings.Nome
-				o.hp.Visible = settings.Vida
-				o.dist.Visible = settings.Distancia
-				o.dist.Text = ("Distância: %d studs"):format(math.floor(dist))
-
 				local hum = o.hum
-				o.hp.Text = ("Vida: %d/%d"):format(math.floor(hum.Health), math.floor(hum.MaxHealth))
-				local pct = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
-				o.hp.TextColor3 = Color3.fromRGB(255, 60, 60):Lerp(Color3.fromRGB(80, 255, 80), pct)
+				local dist = (o.hrp.Position - camPos).Magnitude
+				local hide = dist > settings.Dist
+					or hum.Health <= 0
+					or (settings.Team and player.Team ~= nil and player.Team == lp.Team)
+
+				o.box.Visible = settings.Caixa and not hide
+				o.gui.Enabled = (settings.Nome or settings.Vida or settings.Distancia) and not hide
+
+				if not hide then
+					if settings.Caixa then
+						-- tamanho da caixa: só de vez em quando
+						if now - o.lastBox > BOX_INTERVAL then
+							o.lastBox = now
+							local cf, size = o.char:GetBoundingBox()
+							o.box.Size = size
+							o.box.CFrame = o.hrp.CFrame:ToObjectSpace(cf)
+						end
+
+						-- verde = você vê o jogador, vermelho = atrás de parede
+						if settings.Visib then
+							if raysLeft > 0 and now - o.lastVis > VIS_INTERVAL then
+								o.lastVis = now
+								raysLeft -= 1
+								o.visible = canSee(o.hrp, o.char)
+							end
+							o.box.Color3 = o.visible and COR_VISIVEL or COR_ESCONDIDO
+						else
+							o.box.Color3 = COR_ESCONDIDO
+						end
+					end
+
+					o.name.Visible = settings.Nome
+					o.hp.Visible = settings.Vida
+					o.dist.Visible = settings.Distancia
+
+					if settings.Distancia then
+						setText(o.dist, ("Distância: %d studs"):format(math.floor(dist + 0.5)))
+					end
+					if settings.Vida then
+						-- arredonda para cima: quem está vivo nunca aparece com 0
+						setText(o.hp, ("Vida: %d/%d"):format(math.ceil(hum.Health), math.ceil(hum.MaxHealth)))
+						local pct = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
+						o.hp.TextColor3 = Color3.fromRGB(255, 60, 60):Lerp(Color3.fromRGB(80, 255, 80), pct)
+					end
+				end
 			end
 		end
 	end)
@@ -1137,10 +1302,12 @@ else
 	local espTab = mkTab(secVisao, { Title = "ESP", Icon = "eye", IconColor = Color3.fromHex("#22C55E") })
 
 	local espToggles = {
-		{ "Caixa", "Caixa", "Desenha uma caixa em volta de cada jogador. Aparece através das paredes." },
+		{ "Caixa", "Caixa", "Desenha uma caixa ajustada ao tamanho real de cada jogador. Aparece através das paredes." },
 		{ "Nome", "Nome do jogador", "Mostra o nome de cada jogador acima da cabeça." },
 		{ "Vida", "Vida do jogador", "Mostra a vida atual e máxima. Vai de vermelho (pouca) a verde (cheia)." },
 		{ "Distancia", "Distância do jogador", "Mostra, em studs, a distância entre você e cada jogador." },
+		{ "Visib", "Cor por visibilidade", "A caixa fica verde quando você vê o jogador e vermelha quando ele está atrás de uma parede." },
+		{ "Team", "Esconder meu time", "Não mostra o ESP de jogadores do seu time." },
 	}
 
 	for _, item in ipairs(espToggles) do
@@ -1157,7 +1324,7 @@ else
 
 	espTab:Slider({
 		Title = "Distância máxima",
-		Desc = "Até onde o ESP mostra os jogadores (em studs).",
+		Desc = "Até onde o ESP mostra os jogadores (em studs). Valores menores deixam o jogo mais leve.",
 		Value = { Min = 100, Max = 20000, Default = 5000 },
 		Callback = function(value)
 			settings.Dist = value
@@ -1170,7 +1337,7 @@ else
 	pcall(function()
 		tpDropdown = tpTab:Dropdown({
 			Title = "Escolher jogador",
-			Desc = "Lista de jogadores do servidor. Atualiza quando alguém entra ou sai.",
+			Desc = "Lista de jogadores do servidor. Use o botão \"Atualizar lista\" para recarregar.",
 			Values = playerNames(),
 			Callback = function(value)
 				tp.Selected = value
@@ -1259,7 +1426,7 @@ else
 	speedTab:Slider({
 		Title = "Velocidade de corrida",
 		Desc = "Escolha o quão rápido você corre. O normal do Roblox é 16.",
-		Value = { Min = 16, Max = 200, Default = 50 },
+		Value = { Min = 16, Max = 1000, Default = 50 },
 		Callback = function(value)
 			speed.Value = value
 		end,
@@ -1281,7 +1448,7 @@ else
 	flyTab:Slider({
 		Title = "Velocidade do voo",
 		Desc = "Escolha a velocidade com que você voa.",
-		Value = { Min = 10, Max = 300, Default = 50 },
+		Value = { Min = 10, Max = 900, Default = 100 },
 		Callback = function(value)
 			fly.Speed = value
 		end,
@@ -1329,7 +1496,7 @@ else
 
 	aimToggle = aimTab:Toggle({
 		Title = "Mira no círculo (tecla O)",
-		Desc = "Quem entrar no círculo que segue o mouse é travado pela câmera no HumanoidRootPart. Para soltar, vire o mouse rápido pro lado.",
+		Desc = "Quem entrar no círculo que segue o mouse é travado pela câmera. Para soltar, vire o mouse rápido pro lado.",
 		Default = false,
 		Callback = function(state)
 			if syncing then return end
@@ -1338,12 +1505,51 @@ else
 		end,
 	})
 
+	pcall(function()
+		aimTab:Dropdown({
+			Title = "Parte do corpo",
+			Desc = "Onde a câmera mira: HumanoidRootPart (centro), Head (cabeça) ou Torso (tronco).",
+			Values = { "HumanoidRootPart", "Head", "Torso" },
+			Value = "HumanoidRootPart",
+			Callback = function(value)
+				aim.Part = value
+			end,
+		})
+	end)
+
 	aimTab:Slider({
 		Title = "Tamanho do círculo",
 		Desc = "Raio do círculo em pixels.",
 		Value = { Min = 30, Max = 500, Default = 120 },
 		Callback = function(value)
 			aim.Radius = value
+		end,
+	})
+
+	aimTab:Slider({
+		Title = "Suavidade",
+		Desc = "0 = trava na hora. Valores maiores fazem a câmera acompanhar o alvo de forma mais suave e natural.",
+		Value = { Min = 0, Max = 20, Default = 0 },
+		Callback = function(value)
+			aim.Smooth = value
+		end,
+	})
+
+	aimTab:Slider({
+		Title = "Antecipação do movimento",
+		Desc = "Mira um pouco à frente de quem está correndo (em milissegundos). 0 = desligado. Se errar para frente, diminua.",
+		Value = { Min = 0, Max = 300, Default = 0 },
+		Callback = function(value)
+			aim.Predict = value
+		end,
+	})
+
+	aimTab:Slider({
+		Title = "Distância máxima",
+		Desc = "Só trava em jogadores até essa distância (em studs).",
+		Value = { Min = 100, Max = 5000, Default = 2000 },
+		Callback = function(value)
+			aim.MaxDist = value
 		end,
 	})
 
@@ -1367,10 +1573,28 @@ else
 
 	aimTab:Toggle({
 		Title = "Wall check",
-		Desc = "Só trava em quem você consegue ver. Se o jogador for para trás de uma parede, a trava solta.",
+		Desc = "Só trava em quem você consegue ver. Ignora vidro e objetos sem colisão. Se o jogador for para trás de uma parede, a trava solta.",
 		Default = true,
 		Callback = function(state)
 			aim.Wall = state
+		end,
+	})
+
+	aimTab:Toggle({
+		Title = "Só segurando o botão direito",
+		Desc = "A mira só trava enquanto você segura o botão direito do mouse. Ao soltar, a trava solta.",
+		Default = false,
+		Callback = function(state)
+			aim.HoldRMB = state
+		end,
+	})
+
+	aimTab:Toggle({
+		Title = "Mostrar ponto de mira",
+		Desc = "Mostra um ponto vermelho no lugar exato para onde a câmera está mirando.",
+		Default = true,
+		Callback = function(state)
+			aim.ShowDot = state
 		end,
 	})
 
