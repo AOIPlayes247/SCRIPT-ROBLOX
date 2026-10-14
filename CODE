@@ -47,13 +47,49 @@ if RunService:IsServer() then
 		end
 	end)
 
-	Players.PlayerAdded:Connect(setup)
+	-- mantém os personagens de todos carregados para os admins (StreamingEnabled)
+	local function persistFor(admin, char)
+		pcall(function()
+			char.ModelStreamingMode = Enum.ModelStreamingMode.PersistentPerPlayer
+			char:AddPersistentPlayer(admin)
+		end)
+	end
+
+	local function watchCharacters(p)
+		p.CharacterAdded:Connect(function(char)
+			for admin in pairs(state) do
+				if admin.Parent then persistFor(admin, char) end
+			end
+		end)
+		if p.Character then
+			for admin in pairs(state) do
+				if admin.Parent then persistFor(admin, p.Character) end
+			end
+		end
+	end
+
+	local function setupAdminView(admin)
+		if not ADMINS[admin.UserId] then return end
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p.Character then persistFor(admin, p.Character) end
+		end
+	end
+
+	Players.PlayerAdded:Connect(function(p)
+		setup(p)
+		watchCharacters(p)
+		setupAdminView(p)
+	end)
 	Players.PlayerRemoving:Connect(function(player)
 		local s = state[player]
 		if s and s.conn then s.conn:Disconnect() end
 		state[player] = nil
 	end)
-	for _, p in ipairs(Players:GetPlayers()) do setup(p) end
+	for _, p in ipairs(Players:GetPlayers()) do
+		setup(p)
+		watchCharacters(p)
+		setupAdminView(p)
+	end
 
 else
 	-- ====================================================
@@ -79,6 +115,8 @@ else
 		Caixa = true,
 		Nome = true,
 		Vida = true,
+		Distancia = true, -- mostra a distância até o jogador
+		Dist = 5000,      -- distância máxima do ESP (studs)
 	}
 
 	local objects = {}
@@ -137,8 +175,9 @@ else
 		local gui = Instance.new("BillboardGui")
 		gui.Adornee = head
 		gui.AlwaysOnTop = true
-		gui.Size = UDim2.new(0, 160, 0, 32)
-		gui.StudsOffset = Vector3.new(0, 3, 0)
+		gui.MaxDistance = math.huge
+		gui.Size = UDim2.new(0, 160, 0, 46)
+		gui.StudsOffset = Vector3.new(0, 3.5, 0)
 		gui.Parent = folder
 
 		local layout = Instance.new("UIListLayout")
@@ -149,11 +188,12 @@ else
 
 		local nameL = makeLabel(gui, 1, Color3.new(1, 1, 1))
 		local hpL = makeLabel(gui, 2, Color3.fromRGB(80, 255, 80))
+		local distL = makeLabel(gui, 3, Color3.fromRGB(255, 220, 90))
 		nameL.Text = player.DisplayName
 
 		objects[player] = {
 			folder = folder, box = box, gui = gui,
-			name = nameL, hp = hpL, hrp = hrp, hum = hum,
+			name = nameL, hp = hpL, dist = distL, hrp = hrp, hum = hum,
 		}
 
 		-- Morreu: deleta (recria no CharacterAdded ao renascer)
@@ -625,6 +665,153 @@ else
 		end
 	end
 
+	-- ========= MIRA (círculo que segue o mouse) =========
+	local aim = {
+		On = false,
+		Radius = 120,       -- tamanho do círculo (pixels)
+		Team = true,        -- ignora jogadores do seu time
+		Wall = true,        -- ignora jogadores atrás de paredes
+		Target = nil,       -- jogador travado
+		Ignore = nil,       -- jogador solto (só trava de novo depois que sair do círculo)
+		Flick = 0,          -- quanto você mexeu o mouse pro lado
+		FlickLimit = 150,   -- quanto precisa virar pro lado pra soltar a trava
+	}
+	local aimToggle
+
+	local aimGui = Instance.new("ScreenGui")
+	aimGui.Name = "AOI_AimCircle"
+	aimGui.ResetOnSpawn = false
+	aimGui.IgnoreGuiInset = true -- alinha o círculo com a posição do mouse
+	aimGui.DisplayOrder = 998
+	aimGui.Parent = (gethui and gethui()) or lp:WaitForChild("PlayerGui")
+
+	local circle = Instance.new("Frame")
+	circle.AnchorPoint = Vector2.new(0.5, 0.5)
+	circle.BackgroundTransparency = 1
+	circle.Visible = false
+	circle.Parent = aimGui
+	Instance.new("UICorner", circle).CornerRadius = UDim.new(1, 0)
+
+	local circleStroke = Instance.new("UIStroke")
+	circleStroke.Thickness = 2
+	circleStroke.Color = Color3.new(1, 1, 1)
+	circleStroke.Parent = circle
+
+	local function syncAim(state)
+		if aimToggle then
+			syncing = true
+			pcall(function() aimToggle:Set(state) end)
+			syncing = false
+		end
+	end
+
+	local wallParams = RaycastParams.new()
+	wallParams.FilterType = Enum.RaycastFilterType.Exclude
+
+	-- devolve hrp, humanoid, character se o jogador for um alvo válido
+	local function getTargetParts(p)
+		if not p or p == lp then return end
+		if aim.Team and p.Team ~= nil and p.Team == lp.Team then return end
+		local char = p.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		if not (hum and hrp) or hum.Health <= 0 then return end
+		return hrp, hum, char
+	end
+
+	local function hasWall(hrp, char)
+		if not aim.Wall then return false end
+		wallParams.FilterDescendantsInstances = { lp.Character, char }
+		local origin = cam.CFrame.Position
+		local hit = workspace:Raycast(origin, hrp.Position - origin, wallParams)
+		return hit ~= nil
+	end
+
+	-- distância do centro do círculo (mouse) até o jogador na tela
+	local function screenDist(hrp, mouse)
+		local pos, onScreen = cam:WorldToViewportPoint(hrp.Position)
+		if not onScreen then return nil end
+		return (Vector2.new(pos.X, pos.Y) - mouse).Magnitude
+	end
+
+	local function releaseAim(ignoreIt)
+		aim.Ignore = ignoreIt and aim.Target or nil
+		aim.Target = nil
+		aim.Flick = 0
+	end
+
+	-- virar o mouse/dedo pro lado solta a trava
+	UIS.InputChanged:Connect(function(input, gp)
+		if gp or not aim.On or not aim.Target then return end
+		if input.UserInputType == Enum.UserInputType.MouseMovement
+			or input.UserInputType == Enum.UserInputType.Touch then
+			aim.Flick += math.abs(input.Delta.X)
+		end
+	end)
+
+	RunService:BindToRenderStep("AOI_Aim", Enum.RenderPriority.Camera.Value + 1, function(dt)
+		circle.Visible = aim.On
+		if not aim.On then return end
+
+		local mouse = UIS:GetMouseLocation()
+		circle.Position = UDim2.fromOffset(mouse.X, mouse.Y)
+		circle.Size = UDim2.fromOffset(aim.Radius * 2, aim.Radius * 2)
+		aim.Flick = math.max(0, aim.Flick - 600 * dt) -- o movimento "esfria" com o tempo
+
+		-- jogador solto só pode ser travado de novo depois de sair do círculo
+		if aim.Ignore then
+			local hrp = getTargetParts(aim.Ignore)
+			local d = hrp and screenDist(hrp, mouse)
+			if not d or d > aim.Radius then aim.Ignore = nil end
+		end
+
+		-- mantém ou solta o alvo atual
+		if aim.Target then
+			local hrp, _, char = getTargetParts(aim.Target)
+			if not hrp or hasWall(hrp, char) then
+				releaseAim(false)
+			elseif aim.Flick > aim.FlickLimit then
+				releaseAim(true)
+			end
+		end
+
+		-- procura um novo alvo dentro do círculo (o mais perto do mouse)
+		if not aim.Target then
+			local best, bestDist
+			for _, p in ipairs(Players:GetPlayers()) do
+				if p ~= aim.Ignore then
+					local hrp, _, char = getTargetParts(p)
+					if hrp then
+						local d = screenDist(hrp, mouse)
+						if d and d <= aim.Radius and (not bestDist or d < bestDist) and not hasWall(hrp, char) then
+							best, bestDist = p, d
+						end
+					end
+				end
+			end
+			aim.Target = best
+		end
+
+		-- trava a câmera no HumanoidRootPart
+		local locked = false
+		if aim.Target then
+			local hrp = getTargetParts(aim.Target)
+			if hrp then
+				cam.CFrame = CFrame.lookAt(cam.CFrame.Position, hrp.Position)
+				locked = true
+			end
+		end
+		circleStroke.Color = locked and Color3.fromRGB(255, 60, 60) or Color3.new(1, 1, 1)
+	end)
+
+	lp.CharacterAdded:Connect(function() releaseAim(false) end)
+
+	local function toggleAim()
+		aim.On = not aim.On
+		if not aim.On then releaseAim(false) end
+		syncAim(aim.On)
+	end
+
 	-- ========= ATUALIZAÇÃO (todo quadro) =========
 	RunService.RenderStepped:Connect(function(dt)
 		local myChar = lp.Character
@@ -689,11 +876,16 @@ else
 			if not (o.hrp and o.hrp.Parent) then
 				clear(player)
 			else
-				o.box.Visible = settings.Caixa
-				o.gui.Enabled = settings.Nome or settings.Vida
+				local dist = (o.hrp.Position - cam.CFrame.Position).Magnitude
+				local inRange = dist <= settings.Dist
+
+				o.box.Visible = settings.Caixa and inRange
+				o.gui.Enabled = (settings.Nome or settings.Vida or settings.Distancia) and inRange
 
 				o.name.Visible = settings.Nome
 				o.hp.Visible = settings.Vida
+				o.dist.Visible = settings.Distancia
+				o.dist.Text = ("Distância: %d studs"):format(math.floor(dist))
 
 				local hum = o.hum
 				o.hp.Text = ("Vida: %d/%d"):format(math.floor(hum.Health), math.floor(hum.MaxHealth))
@@ -737,7 +929,7 @@ else
 		HideSearchBar = true,
 		ScrollBarEnabled = false,
 		User = {
-			Enabled = true,
+			Enabled = false, -- esconde o bonequinho (Anonymous) do menu
 			Anonymous = true,
 		},
 	})
@@ -902,13 +1094,53 @@ else
 		end
 	end)
 
+	-- ========= ORGANIZAÇÃO DO MENU (seções) =========
+	local function mkSection(title, icon, color)
+		local ok, sec = pcall(function()
+			return Window:Section({ Title = title, Icon = icon, IconColor = color, Opened = true })
+		end)
+		return ok and sec or nil
+	end
+
+	-- cria a aba dentro da seção (se a seção não existir, cria solta)
+	local function mkTab(sec, opts)
+		if sec then
+			local ok, tab = pcall(function() return sec:Tab(opts) end)
+			if ok and tab then return tab end
+		end
+		return Window:Tab(opts)
+	end
+
+	-- ========= ABA: INÍCIO (atalhos) =========
+	local homeTab = Window:Tab({ Title = "Início", Icon = "home" })
+
+	local okHome = pcall(function()
+		homeTab:Paragraph({
+			Title = "Atalhos do teclado",
+			Desc = "V  -  Voar\nG  -  Atravessar parede\nR  -  Regenerar vida\nT  -  Correr rápido\nO  -  Mira no círculo\nF4  -  Fechar / abrir o menu\nRightShift  -  Abrir / fechar o menu",
+		})
+	end)
+	if not okHome then
+		homeTab:Button({
+			Title = "Atalhos: V voar, G parede, R vida, T correr, O mira",
+			Callback = function() end,
+		})
+	end
+
+	-- A ordem de criação define a ordem no menu
+	local secVisao = mkSection("Visão", "eye", Color3.fromHex("#22C55E"))
+	local secCombate = mkSection("Combate", "crosshair", Color3.fromHex("#EC4899"))
+	local secPersonagem = mkSection("Personagem", "user", Color3.fromHex("#3B82F6"))
+	local secSistema = mkSection("Sistema", "settings", Color3.fromHex("#14B8A6"))
+
 	-- ========= ABA: ESP =========
-	local espTab = Window:Tab({ Title = "ESP (Ver Jogadores)", Icon = "eye" })
+	local espTab = mkTab(secVisao, { Title = "ESP", Icon = "eye", IconColor = Color3.fromHex("#22C55E") })
 
 	local espToggles = {
 		{ "Caixa", "Caixa", "Desenha uma caixa em volta de cada jogador. Aparece através das paredes." },
 		{ "Nome", "Nome do jogador", "Mostra o nome de cada jogador acima da cabeça." },
 		{ "Vida", "Vida do jogador", "Mostra a vida atual e máxima. Vai de vermelho (pouca) a verde (cheia)." },
+		{ "Distancia", "Distância do jogador", "Mostra, em studs, a distância entre você e cada jogador." },
 	}
 
 	for _, item in ipairs(espToggles) do
@@ -923,8 +1155,17 @@ else
 		})
 	end
 
+	espTab:Slider({
+		Title = "Distância máxima",
+		Desc = "Até onde o ESP mostra os jogadores (em studs).",
+		Value = { Min = 100, Max = 20000, Default = 5000 },
+		Callback = function(value)
+			settings.Dist = value
+		end,
+	})
+
 	-- ========= ABA: TELEPORTE =========
-	local tpTab = Window:Tab({ Title = "Teleporte", Icon = "map-pin" })
+	local tpTab = mkTab(secPersonagem, { Title = "Teleporte", Icon = "map-pin", IconColor = Color3.fromHex("#3B82F6") })
 
 	pcall(function()
 		tpDropdown = tpTab:Dropdown({
@@ -968,7 +1209,7 @@ else
 	})
 
 	-- ========= ABA: REGENERAÇÃO DE VIDA =========
-	local vidaTab = Window:Tab({ Title = "Regenerar Vida", Icon = "heart" })
+	local vidaTab = mkTab(secPersonagem, { Title = "Vida", Icon = "heart", IconColor = Color3.fromHex("#F43F5E") })
 
 	regenToggle = vidaTab:Toggle({
 		Title = "Regenerar vida (tecla R)",
@@ -1003,7 +1244,7 @@ else
 	})
 
 	-- ========= ABA: VELOCIDADE =========
-	local speedTab = Window:Tab({ Title = "Velocidade", Icon = "zap" })
+	local speedTab = mkTab(secPersonagem, { Title = "Velocidade", Icon = "zap", IconColor = Color3.fromHex("#EAB308") })
 
 	speedToggle = speedTab:Toggle({
 		Title = "Correr rápido (tecla T)",
@@ -1025,7 +1266,7 @@ else
 	})
 
 	-- ========= ABA: VOAR =========
-	local flyTab = Window:Tab({ Title = "Voar", Icon = "bird" })
+	local flyTab = mkTab(secPersonagem, { Title = "Voar", Icon = "bird", IconColor = Color3.fromHex("#06B6D4") })
 
 	flyToggle = flyTab:Toggle({
 		Title = "Voar (tecla V)",
@@ -1052,14 +1293,14 @@ else
 		Callback = function()
 			WindUI:Notify({
 				Title = "Voar",
-				Content = "WASD move na direção da câmera. Espaço sobe e Ctrl esquerdo desce. No carro, Q e E giram o veículo. F liga e desliga.",
+				Content = "WASD move na direção da câmera. Espaço sobe e Ctrl esquerdo desce. No carro, Q e E giram o veículo. V liga e desliga.",
 				Duration = 8,
 			})
 		end,
 	})
 
 	-- ========= ABA: ATRAVESSAR PAREDE =========
-	local noclipTab = Window:Tab({ Title = "Atravessar Parede", Icon = "ghost" })
+	local noclipTab = mkTab(secPersonagem, { Title = "Atravessar Parede", Icon = "ghost", IconColor = Color3.fromHex("#A855F7") })
 
 	noclipToggle = noclipTab:Toggle({
 		Title = "Atravessar parede (tecla G)",
@@ -1083,8 +1324,58 @@ else
 		end,
 	})
 
+	-- ========= ABA: MIRA =========
+	local aimTab = mkTab(secCombate, { Title = "Mira", Icon = "crosshair", IconColor = Color3.fromHex("#EC4899") })
+
+	aimToggle = aimTab:Toggle({
+		Title = "Mira no círculo (tecla O)",
+		Desc = "Quem entrar no círculo que segue o mouse é travado pela câmera no HumanoidRootPart. Para soltar, vire o mouse rápido pro lado.",
+		Default = false,
+		Callback = function(state)
+			if syncing then return end
+			aim.On = state
+			if not state then releaseAim(false) end
+		end,
+	})
+
+	aimTab:Slider({
+		Title = "Tamanho do círculo",
+		Desc = "Raio do círculo em pixels.",
+		Value = { Min = 30, Max = 500, Default = 120 },
+		Callback = function(value)
+			aim.Radius = value
+		end,
+	})
+
+	aimTab:Slider({
+		Title = "Força para soltar",
+		Desc = "Quanto você precisa virar pro lado para soltar a trava. Menor = solta mais fácil.",
+		Value = { Min = 50, Max = 500, Default = 150 },
+		Callback = function(value)
+			aim.FlickLimit = value
+		end,
+	})
+
+	aimTab:Toggle({
+		Title = "Team check",
+		Desc = "Não trava em jogadores do seu time.",
+		Default = true,
+		Callback = function(state)
+			aim.Team = state
+		end,
+	})
+
+	aimTab:Toggle({
+		Title = "Wall check",
+		Desc = "Só trava em quem você consegue ver. Se o jogador for para trás de uma parede, a trava solta.",
+		Default = true,
+		Callback = function(state)
+			aim.Wall = state
+		end,
+	})
+
 	-- ========= ABA: CONFIGURAÇÕES =========
-	local configTab = Window:Tab({ Title = "Configurações", Icon = "settings" })
+	local configTab = mkTab(secSistema, { Title = "Configurações", Icon = "settings", IconColor = Color3.fromHex("#14B8A6") })
 
 	configTab:Toggle({
 		Title = "Modo FPS",
@@ -1105,7 +1396,7 @@ else
 	})
 
 	-- ========= ABA: CRÉDITOS =========
-	local creditsTab = Window:Tab({ Title = "Créditos", Icon = "star" })
+	local creditsTab = mkTab(secSistema, { Title = "Créditos", Icon = "star", IconColor = Color3.fromHex("#F97316") })
 
 	local okParagraph = pcall(function()
 		creditsTab:Paragraph({
@@ -1138,6 +1429,17 @@ else
 			toggleRegen()
 		elseif input.KeyCode == Enum.KeyCode.T then
 			toggleSpeed()
+		elseif input.KeyCode == Enum.KeyCode.O then
+			toggleAim()
+		elseif input.KeyCode == Enum.KeyCode.F4 then
+			-- F4 fecha o menu (e abre de novo se já estiver fechado)
+			if isOpen then
+				pcall(function() Window:Close() end)
+				isOpen = false
+				if bubbleAtiva then bubble.Visible = true end
+			else
+				openMenu()
+			end
 		end
 	end)
 end
