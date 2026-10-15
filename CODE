@@ -89,7 +89,8 @@ else
 
 	local objects = {}
 	local syncing = false
-	local flyToggle, noclipToggle, regenToggle, speedToggle
+	local flyToggle, noclipToggle, regenToggle, speedToggle, espToggle
+	local esp = { On = false } -- o ESP só liga quando você mandar (atalho ou toggle)
 
 	local container = Instance.new("Folder")
 	container.Name = "ESP_Container"
@@ -98,8 +99,13 @@ else
 	-- ========= ESP: CRIAR / REMOVER =========
 	local buildToken = {} -- evita ESP duplicado se o jogador renascer rápido
 
-	local COR_VISIVEL = Color3.fromRGB(80, 255, 80)
-	local COR_ESCONDIDO = Color3.fromRGB(255, 60, 60)
+	-- cores compartilhadas pelo ESP e pela Mira: rosa = inimigo, verde = meu time
+	local COR_INIMIGO = Color3.fromRGB(255, 70, 190)
+	local COR_ALIADO = Color3.fromRGB(80, 255, 80)
+
+	local function isMate(p)
+		return p.Team ~= nil and p.Team == lp.Team
+	end
 
 	local visParams = RaycastParams.new()
 	visParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -148,6 +154,7 @@ else
 	local function build(player, char)
 		clear(player)
 		if player == lp then return end
+		if not esp.On then return end
 
 		buildToken[player] = (buildToken[player] or 0) + 1
 		local myToken = buildToken[player]
@@ -159,7 +166,7 @@ else
 		if hum.Health <= 0 then return end
 
 		-- o jogador renasceu ou saiu enquanto esperava: cancela
-		if buildToken[player] ~= myToken or not char.Parent then return end
+		if buildToken[player] ~= myToken or not char.Parent or not esp.On then return end
 
 		local folder = Instance.new("Folder")
 		folder.Name = player.Name
@@ -172,7 +179,7 @@ else
 		box.AlwaysOnTop = true
 		box.ZIndex = 5
 		box.Transparency = 0.6
-		box.Color3 = COR_ESCONDIDO
+		box.Color3 = COR_INIMIGO
 		box.Parent = folder
 
 		local gui = Instance.new("BillboardGui")
@@ -228,6 +235,35 @@ else
 		buildToken[player] = nil
 	end)
 	for _, p in ipairs(Players:GetPlayers()) do track(p) end
+
+	local function syncEsp(state)
+		if espToggle then
+			syncing = true
+			pcall(function() espToggle:Set(state) end)
+			syncing = false
+		end
+	end
+
+	local function startEsp()
+		esp.On = true
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= lp and p.Character then
+				task.spawn(build, p, p.Character)
+			end
+		end
+		syncEsp(true)
+	end
+
+	local function stopEsp(fromUI)
+		esp.On = false
+		for p in pairs(buildToken) do buildToken[p] += 1 end -- cancela ESPs em construção
+		for p in pairs(objects) do clear(p) end              -- apaga tudo da tela
+		if not fromUI then syncEsp(false) end
+	end
+
+	local function toggleEsp()
+		if esp.On then stopEsp() else startEsp() end
+	end
 
 	-- ========= REGENERAÇÃO DE VIDA =========
 	-- (a cura de verdade é feita pelo servidor; o cliente só avisa)
@@ -696,7 +732,7 @@ else
 	local aim = {
 		On = false,
 		Radius = 120,          -- tamanho do círculo (pixels)
-		Team = true,           -- ignora jogadores do seu time
+		Team = false,          -- true = ignora seu time; false = trava em todos e a cor mostra o time
 		Wall = true,           -- ignora jogadores atrás de paredes
 		HoldRMB = false,       -- só trava segurando o botão direito do mouse
 		ShowDot = true,        -- mostra um ponto onde a câmera está mirando
@@ -744,6 +780,18 @@ else
 	dot.Visible = false
 	dot.Parent = aimGui
 	Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
+
+	-- etiqueta embaixo do círculo: diz quem é o alvo e de qual time
+	local aimLabel = Instance.new("TextLabel")
+	aimLabel.AnchorPoint = Vector2.new(0.5, 0.5)
+	aimLabel.Size = UDim2.fromOffset(240, 18)
+	aimLabel.BackgroundTransparency = 1
+	aimLabel.Font = Enum.Font.GothamBold
+	aimLabel.TextSize = 14
+	aimLabel.TextStrokeTransparency = 0
+	aimLabel.TextColor3 = Color3.new(1, 1, 1)
+	aimLabel.Visible = false
+	aimLabel.Parent = aimGui
 
 	local function syncAim(state)
 		if aimToggle then
@@ -829,6 +877,7 @@ else
 		if not aim.On then
 			if circle.Visible then circle.Visible = false end
 			if dot.Visible then dot.Visible = false end
+			if aimLabel.Visible then aimLabel.Visible = false end
 			return
 		end
 		circle.Visible = true
@@ -843,6 +892,7 @@ else
 		-- modo "segurar botão direito": sem o botão, não trava
 		if aim.HoldRMB and not UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
 			if aim.Target then releaseAim(false) end
+			aimLabel.Visible = false
 			dot.Visible = false
 			circleStroke.Color = Color3.new(1, 1, 1)
 			return
@@ -914,7 +964,22 @@ else
 				end
 			end
 		end
-		circleStroke.Color = locked and Color3.fromRGB(255, 60, 60) or Color3.new(1, 1, 1)
+		local tcolor, ttext = Color3.new(1, 1, 1), nil
+		if locked and aim.Target then
+			local mate = aim.Target.Team ~= nil and aim.Target.Team == lp.Team
+			tcolor = mate and COR_ALIADO or COR_INIMIGO
+			ttext = (mate and "MEU TIME: " or "INIMIGO: ") .. aim.Target.DisplayName
+		end
+		circleStroke.Color = tcolor
+		dot.BackgroundColor3 = tcolor
+		if ttext then
+			if aimLabel.Text ~= ttext then aimLabel.Text = ttext end
+			aimLabel.TextColor3 = tcolor
+			aimLabel.Position = UDim2.fromOffset(mouse.X, mouse.Y + aim.Radius + 14)
+			aimLabel.Visible = true
+		else
+			aimLabel.Visible = false
+		end
 	end)
 
 	lp.CharacterAdded:Connect(function() releaseAim(false) end)
@@ -998,6 +1063,7 @@ else
 	end
 
 	RunService.Heartbeat:Connect(function(dt)
+		if not esp.On then return end
 		espClock += dt
 		if espClock < ESP_INTERVAL then return end
 		espClock = 0
@@ -1029,20 +1095,22 @@ else
 							o.box.CFrame = o.hrp.CFrame:ToObjectSpace(cf)
 						end
 
-						-- verde = você vê o jogador, vermelho = atrás de parede
+						-- cor = time (rosa inimigo, verde meu time); caixa forte = você vê, fraca = atrás de parede
+						o.box.Color3 = isMate(player) and COR_ALIADO or COR_INIMIGO
 						if settings.Visib then
 							if raysLeft > 0 and now - o.lastVis > VIS_INTERVAL then
 								o.lastVis = now
 								raysLeft -= 1
 								o.visible = canSee(o.hrp, o.char)
 							end
-							o.box.Color3 = o.visible and COR_VISIVEL or COR_ESCONDIDO
+							o.box.Transparency = o.visible and 0.35 or 0.8
 						else
-							o.box.Color3 = COR_ESCONDIDO
+							o.box.Transparency = 0.6
 						end
 					end
 
 					o.name.Visible = settings.Nome
+					o.name.TextColor3 = isMate(player) and COR_ALIADO or COR_INIMIGO
 					o.hp.Visible = settings.Vida
 					o.dist.Visible = settings.Distancia
 
@@ -1066,13 +1134,13 @@ else
 	pcall(function()
 		WindUI:AddTheme({
 			Name = THEME_NAME,
-			Accent = Color3.fromHex("#E11D1D"),
-			Dialog = Color3.fromHex("#140808"),
+			Accent = Color3.fromHex("#EF2B2B"),
+			Dialog = Color3.fromHex("#160A0A"),
 			Outline = Color3.fromHex("#FFFFFF"),
 			Text = Color3.fromHex("#FFFFFF"),
 			Placeholder = Color3.fromHex("#9A8A8A"),
-			Background = Color3.fromHex("#0A0A0A"),
-			Button = Color3.fromHex("#2A0E0E"),
+			Background = Color3.fromHex("#0B0B0C"),
+			Button = Color3.fromHex("#241010"),
 			Icon = Color3.fromHex("#FF4040"),
 		})
 	end)
@@ -1083,14 +1151,14 @@ else
 		Icon = "shield",
 		Author = "por " .. CREATOR,
 		Folder = "PainelAdmin",
-		Size = UDim2.fromOffset(580, 460),
-		MinSize = Vector2.new(560, 350),
-		MaxSize = Vector2.new(850, 560),
+		Size = UDim2.fromOffset(620, 480),
+		MinSize = Vector2.new(580, 380),
+		MaxSize = Vector2.new(900, 600),
 		ToggleKey = Enum.KeyCode.RightShift,
 		Transparent = false,
 		Theme = THEME_NAME,
 		Resizable = true,
-		SideBarWidth = 200,
+		SideBarWidth = 190,
 		HideSearchBar = true,
 		ScrollBarEnabled = false,
 		User = {
@@ -1259,6 +1327,67 @@ else
 		end
 	end)
 
+	-- ========= AUTO CLICK =========
+	local ac = { On = false, CPS = 10, Mode = "Clique do mouse", PauseMenu = true, token = 0 }
+	local acToggle
+
+	local VIM = nil
+	pcall(function() VIM = game:GetService("VirtualInputManager") end)
+
+	local function syncAutoClick(state)
+		if acToggle then
+			syncing = true
+			pcall(function() acToggle:Set(state) end)
+			syncing = false
+		end
+	end
+
+	local function doClick()
+		if ac.Mode == "Ferramenta equipada" then
+			local char = lp.Character
+			local tool = char and char:FindFirstChildOfClass("Tool")
+			if tool then pcall(function() tool:Activate() end) end
+			return
+		end
+		if mouse1click then
+			pcall(mouse1click)
+		elseif VIM then
+			local m = UIS:GetMouseLocation()
+			pcall(function()
+				VIM:SendMouseButtonEvent(m.X, m.Y, 0, true, game, 0)
+				VIM:SendMouseButtonEvent(m.X, m.Y, 0, false, game, 0)
+			end)
+		end
+	end
+
+	local function stopAutoClick(fromUI)
+		ac.On = false
+		ac.token += 1 -- encerra o laço atual
+		if not fromUI then syncAutoClick(false) end
+	end
+
+	local function startAutoClick()
+		if ac.On then return end
+		ac.On = true
+		ac.token += 1
+		local myToken = ac.token
+		syncAutoClick(true)
+
+		task.spawn(function()
+			while ac.On and ac.token == myToken do
+				-- com o menu aberto, pausa (senão ele clicaria nos botões do menu)
+				if not (ac.PauseMenu and isOpen) then
+					doClick()
+				end
+				task.wait(1 / math.max(ac.CPS, 1))
+			end
+		end)
+	end
+
+	local function toggleAutoClick()
+		if ac.On then stopAutoClick() else startAutoClick() end
+	end
+
 	-- ========= ORGANIZAÇÃO DO MENU (seções) =========
 	local function mkSection(title, icon, color)
 		local ok, sec = pcall(function()
@@ -1276,41 +1405,143 @@ else
 		return Window:Tab(opts)
 	end
 
-	-- ========= ABA: INÍCIO (atalhos) =========
-	local homeTab = Window:Tab({ Title = "Início", Icon = "home" })
+	-- ========= TÍTULOS DE GRUPO (dentro das abas) =========
+	local function header(tab, title)
+		local ok = pcall(function()
+			tab:Section({ Title = title, TextSize = 17 })
+		end)
+		if not ok then
+			pcall(function() tab:Divider() end)
+		end
+	end
 
-	local okHome = pcall(function()
+	-- ========= ABA: INÍCIO (atalhos) =========
+	-- atalhos personalizáveis (a troca é feita na aba Configurações)
+	local KEY_ORDER = { "ESP", "Fly", "Noclip", "Regen", "Speed", "Aim", "AutoClick", "Menu" }
+	local KEY_LABELS = {
+		ESP = "ESP (ver jogadores)",
+		Fly = "Voar",
+		Noclip = "Atravessar parede",
+		Regen = "Regenerar vida",
+		Speed = "Correr rápido",
+		Aim = "Mira no círculo",
+		AutoClick = "Auto click",
+		Menu = "Fechar / abrir o menu",
+	}
+	local KEY_DEFAULTS = {
+		ESP = "N", Fly = "V", Noclip = "G", Regen = "R", Speed = "T",
+		Aim = "O", AutoClick = "K", Menu = "F4",
+	}
+	local keybinds = {}
+	for action, key in pairs(KEY_DEFAULTS) do keybinds[action] = key end
+
+	-- número mostrado no menu -> nome real da tecla
+	local ENUM_OF = {
+		["0"] = "Zero", ["1"] = "One", ["2"] = "Two", ["3"] = "Three", ["4"] = "Four",
+		["5"] = "Five", ["6"] = "Six", ["7"] = "Seven", ["8"] = "Eight", ["9"] = "Nine",
+	}
+	local DISPLAY_OF = {}
+	for shown, real in pairs(ENUM_OF) do DISPLAY_OF[real] = shown end
+
+	-- teclas disponíveis (sem W A S D Q E, que são usadas no voo)
+	local KEY_VALUES = {}
+	for _, k in ipairs({ "B", "C", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "R", "T", "U", "V", "X", "Y", "Z" }) do
+		table.insert(KEY_VALUES, k)
+	end
+	for _, k in ipairs({ "1", "2", "3", "4", "5", "6", "7", "8", "9", "0" }) do
+		table.insert(KEY_VALUES, k)
+	end
+	for i = 1, 12 do table.insert(KEY_VALUES, "F" .. i) end
+
+	local function keyShown(action)
+		local real = keybinds[action]
+		return DISPLAY_OF[real] or real
+	end
+
+	local function shortcutsText()
+		local lines = {}
+		for _, action in ipairs(KEY_ORDER) do
+			lines[#lines + 1] = ("%s  -  %s"):format(keyShown(action), KEY_LABELS[action])
+		end
+		lines[#lines + 1] = "RightShift  -  Abrir / fechar o menu"
+		return table.concat(lines, "\n")
+	end
+
+	local homeTab = Window:Tab({ Title = "Início", Icon = "home" })
+	local homeParagraph = nil
+
+	local function refreshShortcuts()
+		if homeParagraph then
+			pcall(function() homeParagraph:SetDesc(shortcutsText()) end)
+		end
+	end
+
+	header(homeTab, "Bem-vindo")
+	pcall(function()
 		homeTab:Paragraph({
+			Title = "Painel do Admin",
+			Desc = "Tudo fica organizado por seção no menu ao lado:\n\nVisão  -  ESP\nCombate  -  Mira e Auto Click\nPersonagem  -  Voar, Atravessar Parede, Velocidade, Vida e Teleporte\nConfigurações  -  Modo FPS, Atalhos e Créditos",
+		})
+	end)
+
+	header(homeTab, "Atalhos atuais")
+	local okHome = pcall(function()
+		homeParagraph = homeTab:Paragraph({
 			Title = "Atalhos do teclado",
-			Desc = "V  -  Voar\nG  -  Atravessar parede\nR  -  Regenerar vida\nT  -  Correr rápido\nO  -  Mira no círculo\nF4  -  Fechar / abrir o menu\nRightShift  -  Abrir / fechar o menu",
+			Desc = shortcutsText(),
 		})
 	end)
 	if not okHome then
 		homeTab:Button({
-			Title = "Atalhos: V voar, G parede, R vida, T correr, O mira",
+			Title = "Atalhos: veja e troque na aba Configurações",
 			Callback = function() end,
 		})
 	end
+
+	header(homeTab, "Dicas")
+	pcall(function()
+		homeTab:Paragraph({
+			Title = "Como usar",
+			Desc = "Troque as teclas na aba Configurações.\nUse a bolinha ou o RightShift para abrir e fechar o menu.\nO Modo FPS (também em Configurações) deixa o jogo mais leve.",
+		})
+	end)
 
 	-- A ordem de criação define a ordem no menu
 	local secVisao = mkSection("Visão", "eye", Color3.fromHex("#22C55E"))
 	local secCombate = mkSection("Combate", "crosshair", Color3.fromHex("#EC4899"))
 	local secPersonagem = mkSection("Personagem", "user", Color3.fromHex("#3B82F6"))
-	local secSistema = mkSection("Sistema", "settings", Color3.fromHex("#14B8A6"))
 
 	-- ========= ABA: ESP =========
 	local espTab = mkTab(secVisao, { Title = "ESP", Icon = "eye", IconColor = Color3.fromHex("#22C55E") })
 
+	header(espTab, "Ativação")
+
+	espToggle = espTab:Toggle({
+		Title = "ESP (ver jogadores)",
+		Desc = "Começa desligado. Liga e desliga pelo atalho (troque na aba Configurações). Desligado, o ESP não gasta nada do jogo.",
+		Default = false,
+		Callback = function(state)
+			if syncing then return end
+			if state then startEsp() else stopEsp(true) end
+		end,
+	})
+
 	local espToggles = {
+		{ "__h", "Informações no jogador" },
 		{ "Caixa", "Caixa", "Desenha uma caixa ajustada ao tamanho real de cada jogador. Aparece através das paredes." },
 		{ "Nome", "Nome do jogador", "Mostra o nome de cada jogador acima da cabeça." },
 		{ "Vida", "Vida do jogador", "Mostra a vida atual e máxima. Vai de vermelho (pouca) a verde (cheia)." },
 		{ "Distancia", "Distância do jogador", "Mostra, em studs, a distância entre você e cada jogador." },
-		{ "Visib", "Cor por visibilidade", "A caixa fica verde quando você vê o jogador e vermelha quando ele está atrás de uma parede." },
+		{ "__h", "Filtros e cores" },
+		{ "Visib", "Destacar quem está visível", "A caixa fica forte quando você vê o jogador e fraca quando ele está atrás de uma parede. A cor mostra o time: rosa = inimigo, verde = meu time (igual à Mira)." },
 		{ "Team", "Esconder meu time", "Não mostra o ESP de jogadores do seu time." },
 	}
 
 	for _, item in ipairs(espToggles) do
+		if item[1] == "__h" then
+			header(espTab, item[2])
+			continue
+		end
 		local key, label, desc = item[1], item[2], item[3]
 		espTab:Toggle({
 			Title = label,
@@ -1322,6 +1553,8 @@ else
 		})
 	end
 
+	header(espTab, "Alcance")
+
 	espTab:Slider({
 		Title = "Distância máxima",
 		Desc = "Até onde o ESP mostra os jogadores (em studs). Valores menores deixam o jogo mais leve.",
@@ -1331,8 +1564,129 @@ else
 		end,
 	})
 
+	-- ========= ABA: VOAR =========
+	local flyTab = mkTab(secPersonagem, { Title = "Voar", Icon = "bird", IconColor = Color3.fromHex("#06B6D4") })
+	header(flyTab, "Voo")
+
+	flyToggle = flyTab:Toggle({
+		Title = "Voar",
+		Desc = "Você voa na direção da câmera. A câmera fica livre, o personagem só gira na horizontal. Se estiver sentado em um carro, o carro voa junto.",
+		Default = false,
+		Callback = function(state)
+			if syncing then return end
+			if state then startFly() else stopFly() end
+		end,
+	})
+
+	flyTab:Slider({
+		Title = "Velocidade do voo",
+		Desc = "Escolha a velocidade com que você voa.",
+		Value = { Min = 10, Max = 300, Default = 50 },
+		Callback = function(value)
+			fly.Speed = value
+		end,
+	})
+
+	flyTab:Button({
+		Title = "Controles do voo",
+		Desc = "Mostra as teclas para voar.",
+		Callback = function()
+			WindUI:Notify({
+				Title = "Voar",
+				Content = "WASD move na direção da câmera. Espaço sobe e Ctrl esquerdo desce. No carro, Q e E giram o veículo. O atalho liga e desliga (troque na aba Configurações).",
+				Duration = 8,
+			})
+		end,
+	})
+
+	-- ========= ABA: ATRAVESSAR PAREDE =========
+	local noclipTab = mkTab(secPersonagem, { Title = "Atravessar Parede", Icon = "ghost", IconColor = Color3.fromHex("#A855F7") })
+	header(noclipTab, "Colisão")
+
+	noclipToggle = noclipTab:Toggle({
+		Title = "Atravessar parede",
+		Desc = "Desliga a colisão do seu personagem (e do carro, se estiver sentado) para passar por paredes. Combine com o Voar para não cair pelo chão.",
+		Default = false,
+		Callback = function(state)
+			if syncing then return end
+			if state then startNoclip() else stopNoclip() end
+		end,
+	})
+
+	noclipTab:Button({
+		Title = "Dica para ver atrás das paredes",
+		Desc = "Como usar com o ESP.",
+		Callback = function()
+			WindUI:Notify({
+				Title = "Atravessar parede",
+				Content = "Ligue Atravessar Parede e Voar juntos. Assim você passa por tudo sem cair, e o ESP mostra quem está do outro lado.",
+				Duration = 8,
+			})
+		end,
+	})
+
+	-- ========= ABA: VELOCIDADE =========
+	local speedTab = mkTab(secPersonagem, { Title = "Velocidade", Icon = "zap", IconColor = Color3.fromHex("#EAB308") })
+	header(speedTab, "Corrida")
+
+	speedToggle = speedTab:Toggle({
+		Title = "Correr rápido",
+		Desc = "Aumenta a velocidade do seu personagem. Ao desligar, volta ao normal na hora.",
+		Default = false,
+		Callback = function(state)
+			if syncing then return end
+			if state then startSpeed() else stopSpeed(true) end
+		end,
+	})
+
+	speedTab:Slider({
+		Title = "Velocidade de corrida",
+		Desc = "Escolha o quão rápido você corre. O normal do Roblox é 16.",
+		Value = { Min = 16, Max = 200, Default = 50 },
+		Callback = function(value)
+			speed.Value = value
+		end,
+	})
+
+	-- ========= ABA: REGENERAÇÃO DE VIDA =========
+	local vidaTab = mkTab(secPersonagem, { Title = "Vida", Icon = "heart", IconColor = Color3.fromHex("#F43F5E") })
+	header(vidaTab, "Regeneração")
+
+	regenToggle = vidaTab:Toggle({
+		Title = "Regenerar vida",
+		Desc = "Sua vida sobe sozinha até o máximo. Continua ligada ao renascer e só desliga pelo toggle ou pelo atalho. Precisa da parte de servidor no seu jogo.",
+		Default = false,
+		Callback = function(state)
+			if syncing then return end
+			if state then startRegen() else stopRegen(true) end
+		end,
+	})
+
+	vidaTab:Slider({
+		Title = "Regeneração por segundo",
+		Desc = "Quanta vida você recupera a cada segundo (1 a 100).",
+		Value = { Min = REGEN_MIN, Max = REGEN_MAX, Default = 10 },
+		Callback = function(value)
+			regen.Rate = value
+			if regen.On then fireRegen() end
+		end,
+	})
+
+	vidaTab:Button({
+		Title = "Como funciona?",
+		Desc = "Explica a regeneração.",
+		Callback = function()
+			WindUI:Notify({
+				Title = "Regenerar vida",
+				Content = "O servidor confere se você é admin e cura sua vida aos poucos. Você ainda pode levar dano, e um dano muito grande de uma vez pode te matar.",
+				Duration = 8,
+			})
+		end,
+	})
+
 	-- ========= ABA: TELEPORTE =========
 	local tpTab = mkTab(secPersonagem, { Title = "Teleporte", Icon = "map-pin", IconColor = Color3.fromHex("#3B82F6") })
+	header(tpTab, "Ir até um jogador")
 
 	pcall(function()
 		tpDropdown = tpTab:Dropdown({
@@ -1375,127 +1729,12 @@ else
 		Callback = refreshDropdown,
 	})
 
-	-- ========= ABA: REGENERAÇÃO DE VIDA =========
-	local vidaTab = mkTab(secPersonagem, { Title = "Vida", Icon = "heart", IconColor = Color3.fromHex("#F43F5E") })
-
-	regenToggle = vidaTab:Toggle({
-		Title = "Regenerar vida (tecla R)",
-		Desc = "Sua vida sobe sozinha até o máximo. Continua ligada ao renascer e só desliga pelo toggle ou pela tecla R. Precisa da parte de servidor no seu jogo.",
-		Default = false,
-		Callback = function(state)
-			if syncing then return end
-			if state then startRegen() else stopRegen(true) end
-		end,
-	})
-
-	vidaTab:Slider({
-		Title = "Regeneração por segundo",
-		Desc = "Quanta vida você recupera a cada segundo (1 a 100).",
-		Value = { Min = REGEN_MIN, Max = REGEN_MAX, Default = 10 },
-		Callback = function(value)
-			regen.Rate = value
-			if regen.On then fireRegen() end
-		end,
-	})
-
-	vidaTab:Button({
-		Title = "Como funciona?",
-		Desc = "Explica a regeneração.",
-		Callback = function()
-			WindUI:Notify({
-				Title = "Regenerar vida",
-				Content = "O servidor confere se você é admin e cura sua vida aos poucos. Você ainda pode levar dano, e um dano muito grande de uma vez pode te matar.",
-				Duration = 8,
-			})
-		end,
-	})
-
-	-- ========= ABA: VELOCIDADE =========
-	local speedTab = mkTab(secPersonagem, { Title = "Velocidade", Icon = "zap", IconColor = Color3.fromHex("#EAB308") })
-
-	speedToggle = speedTab:Toggle({
-		Title = "Correr rápido (tecla T)",
-		Desc = "Aumenta a velocidade do seu personagem. Ao desligar, volta ao normal na hora.",
-		Default = false,
-		Callback = function(state)
-			if syncing then return end
-			if state then startSpeed() else stopSpeed(true) end
-		end,
-	})
-
-	speedTab:Slider({
-		Title = "Velocidade de corrida",
-		Desc = "Escolha o quão rápido você corre. O normal do Roblox é 16.",
-		Value = { Min = 16, Max = 1000, Default = 50 },
-		Callback = function(value)
-			speed.Value = value
-		end,
-	})
-
-	-- ========= ABA: VOAR =========
-	local flyTab = mkTab(secPersonagem, { Title = "Voar", Icon = "bird", IconColor = Color3.fromHex("#06B6D4") })
-
-	flyToggle = flyTab:Toggle({
-		Title = "Voar (tecla V)",
-		Desc = "Você voa na direção da câmera. A câmera fica livre, o personagem só gira na horizontal. Se estiver sentado em um carro, o carro voa junto.",
-		Default = false,
-		Callback = function(state)
-			if syncing then return end
-			if state then startFly() else stopFly() end
-		end,
-	})
-
-	flyTab:Slider({
-		Title = "Velocidade do voo",
-		Desc = "Escolha a velocidade com que você voa.",
-		Value = { Min = 10, Max = 900, Default = 100 },
-		Callback = function(value)
-			fly.Speed = value
-		end,
-	})
-
-	flyTab:Button({
-		Title = "Controles do voo",
-		Desc = "Mostra as teclas para voar.",
-		Callback = function()
-			WindUI:Notify({
-				Title = "Voar",
-				Content = "WASD move na direção da câmera. Espaço sobe e Ctrl esquerdo desce. No carro, Q e E giram o veículo. V liga e desliga.",
-				Duration = 8,
-			})
-		end,
-	})
-
-	-- ========= ABA: ATRAVESSAR PAREDE =========
-	local noclipTab = mkTab(secPersonagem, { Title = "Atravessar Parede", Icon = "ghost", IconColor = Color3.fromHex("#A855F7") })
-
-	noclipToggle = noclipTab:Toggle({
-		Title = "Atravessar parede (tecla G)",
-		Desc = "Desliga a colisão do seu personagem (e do carro, se estiver sentado) para passar por paredes. Combine com o Voar para não cair pelo chão.",
-		Default = false,
-		Callback = function(state)
-			if syncing then return end
-			if state then startNoclip() else stopNoclip() end
-		end,
-	})
-
-	noclipTab:Button({
-		Title = "Dica para ver atrás das paredes",
-		Desc = "Como usar com o ESP.",
-		Callback = function()
-			WindUI:Notify({
-				Title = "Atravessar parede",
-				Content = "Ligue Atravessar Parede e Voar juntos. Assim você passa por tudo sem cair, e o ESP mostra quem está do outro lado.",
-				Duration = 8,
-			})
-		end,
-	})
-
 	-- ========= ABA: MIRA =========
 	local aimTab = mkTab(secCombate, { Title = "Mira", Icon = "crosshair", IconColor = Color3.fromHex("#EC4899") })
+	header(aimTab, "Ativação")
 
 	aimToggle = aimTab:Toggle({
-		Title = "Mira no círculo (tecla O)",
+		Title = "Mira no círculo",
 		Desc = "Quem entrar no círculo que segue o mouse é travado pela câmera. Para soltar, vire o mouse rápido pro lado.",
 		Default = false,
 		Callback = function(state)
@@ -1504,6 +1743,8 @@ else
 			if not state then releaseAim(false) end
 		end,
 	})
+
+	header(aimTab, "Alvo")
 
 	pcall(function()
 		aimTab:Dropdown({
@@ -1525,6 +1766,8 @@ else
 			aim.Radius = value
 		end,
 	})
+
+	header(aimTab, "Movimento da câmera")
 
 	aimTab:Slider({
 		Title = "Suavidade",
@@ -1562,10 +1805,12 @@ else
 		end,
 	})
 
+	header(aimTab, "Verificações e extras")
+
 	aimTab:Toggle({
 		Title = "Team check",
-		Desc = "Não trava em jogadores do seu time.",
-		Default = true,
+		Desc = "Ligado: não trava em jogadores do seu time. Desligado: trava em todos e a cor mostra o time (rosa = inimigo, verde = meu time).",
+		Default = false,
 		Callback = function(state)
 			aim.Team = state
 		end,
@@ -1598,8 +1843,57 @@ else
 		end,
 	})
 
+	-- ========= ABA: AUTO CLICK =========
+	local acTab = mkTab(secCombate, { Title = "Auto Click", Icon = "mouse-pointer-click", IconColor = Color3.fromHex("#F59E0B") })
+	header(acTab, "Controle")
+
+	acToggle = acTab:Toggle({
+		Title = "Auto click",
+		Desc = "Clica sozinho na velocidade escolhida. Também liga e desliga pelo atalho (troque na aba Configurações).",
+		Default = false,
+		Callback = function(state)
+			if syncing then return end
+			if state then startAutoClick() else stopAutoClick(true) end
+		end,
+	})
+
+	header(acTab, "Velocidade")
+
+	acTab:Slider({
+		Title = "Velocidade (cliques por segundo)",
+		Desc = "Quantos cliques por segundo. 1 = bem devagar, 30 = muito rápido. Valores menores deixam o jogo mais leve.",
+		Value = { Min = 1, Max = 30, Default = 10 },
+		Callback = function(value)
+			ac.CPS = math.max(value, 1)
+		end,
+	})
+
+	header(acTab, "Opções")
+
+	pcall(function()
+		acTab:Dropdown({
+			Title = "Tipo de clique",
+			Desc = "Clique do mouse: clica onde o cursor está. Ferramenta equipada: ativa a ferramenta que você está segurando.",
+			Values = { "Clique do mouse", "Ferramenta equipada" },
+			Value = "Clique do mouse",
+			Callback = function(value)
+				ac.Mode = value
+			end,
+		})
+	end)
+
+	acTab:Toggle({
+		Title = "Pausar com o menu aberto",
+		Desc = "Enquanto o menu estiver aberto o auto click espera, para não clicar nos botões do painel. Volta sozinho ao fechar o menu.",
+		Default = true,
+		Callback = function(state)
+			ac.PauseMenu = state
+		end,
+	})
+
 	-- ========= ABA: CONFIGURAÇÕES =========
-	local configTab = mkTab(secSistema, { Title = "Configurações", Icon = "settings", IconColor = Color3.fromHex("#14B8A6") })
+	local configTab = mkTab(nil, { Title = "Configurações", Icon = "settings", IconColor = Color3.fromHex("#14B8A6") })
+	header(configTab, "Desempenho")
 
 	configTab:Toggle({
 		Title = "Modo FPS",
@@ -1619,50 +1913,125 @@ else
 		end,
 	})
 
-	-- ========= ABA: CRÉDITOS =========
-	local creditsTab = mkTab(secSistema, { Title = "Créditos", Icon = "star", IconColor = Color3.fromHex("#F97316") })
+	-- ========= ATALHOS (dentro de Configurações) =========
+	header(configTab, "Atalhos do teclado")
+
+	-- ========= ATALHOS PERSONALIZÁVEIS (seletores) =========
+	local keyDropdowns = {}
+
+	local function setKey(action, shown, dd)
+		local real = ENUM_OF[shown] or shown
+		if real == keybinds[action] then return end
+
+		-- não deixa duas funções na mesma tecla
+		for other, key in pairs(keybinds) do
+			if other ~= action and key == real then
+				WindUI:Notify({
+					Title = "Atalho em uso",
+					Content = "A tecla " .. shown .. " já é de \"" .. KEY_LABELS[other] .. "\". Mantive a tecla " .. keyShown(action) .. " para \"" .. KEY_LABELS[action] .. "\".",
+					Duration = 6,
+				})
+				if dd then
+					pcall(function() dd:Select(keyShown(action)) end)
+				end
+				return
+			end
+		end
+
+		keybinds[action] = real
+		refreshShortcuts()
+		WindUI:Notify({
+			Title = "Atalho alterado",
+			Content = KEY_LABELS[action] .. " agora usa a tecla " .. shown .. ".",
+			Duration = 4,
+		})
+	end
+
+	for _, action in ipairs(KEY_ORDER) do
+		local dd
+		pcall(function()
+			dd = configTab:Dropdown({
+				Title = "Atalho: " .. KEY_LABELS[action],
+				Desc = "Escolha a tecla. Padrão: " .. (DISPLAY_OF[KEY_DEFAULTS[action]] or KEY_DEFAULTS[action]) .. ".",
+				Values = KEY_VALUES,
+				Value = keyShown(action),
+				Callback = function(value)
+					setKey(action, value, dd)
+				end,
+			})
+		end)
+		keyDropdowns[action] = dd
+	end
+
+	configTab:Button({
+		Title = "Restaurar atalhos padrão",
+		Desc = "Volta todos os atalhos para as teclas originais.",
+		Callback = function()
+			for action, key in pairs(KEY_DEFAULTS) do
+				keybinds[action] = key
+			end
+			for action, dd in pairs(keyDropdowns) do
+				if dd then
+					pcall(function() dd:Select(keyShown(action)) end)
+				end
+			end
+			refreshShortcuts()
+			WindUI:Notify({ Title = "Atalhos", Content = "Atalhos restaurados para o padrão.", Duration = 4 })
+		end,
+	})
+
+	-- ========= CRÉDITOS (dentro de Configurações) =========
+	header(configTab, "Créditos")
 
 	local okParagraph = pcall(function()
-		creditsTab:Paragraph({
+		configTab:Paragraph({
 			Title = "Criador: " .. CREATOR,
 			Desc = "Script feito por " .. CREATOR .. ".\nCanal do YouTube: " .. YOUTUBE,
 		})
 	end)
 
 	if not okParagraph then
-		creditsTab:Button({
+		configTab:Button({
 			Title = "Criador: " .. CREATOR,
 			Callback = function() end,
 		})
 	end
 
-	creditsTab:Button({
+	configTab:Button({
 		Title = "Copiar link do YouTube",
 		Desc = "Copia o link do canal do criador. Se não der para copiar, o link aparece em uma notificação.",
 		Callback = copyYoutube,
 	})
 
-	-- ========= TECLAS =========
-	UIS.InputBegan:Connect(function(input, gp)
-		if gp then return end
-		if input.KeyCode == Enum.KeyCode.V then
-			toggleFly()
-		elseif input.KeyCode == Enum.KeyCode.G then
-			toggleNoclip()
-		elseif input.KeyCode == Enum.KeyCode.R then
-			toggleRegen()
-		elseif input.KeyCode == Enum.KeyCode.T then
-			toggleSpeed()
-		elseif input.KeyCode == Enum.KeyCode.O then
-			toggleAim()
-		elseif input.KeyCode == Enum.KeyCode.F4 then
-			-- F4 fecha o menu (e abre de novo se já estiver fechado)
+	-- ========= TECLAS (usam os atalhos configurados) =========
+	local keyActions = {
+		ESP = toggleEsp,
+		Fly = toggleFly,
+		Noclip = toggleNoclip,
+		Regen = toggleRegen,
+		Speed = toggleSpeed,
+		Aim = toggleAim,
+		AutoClick = toggleAutoClick,
+		Menu = function()
+			-- fecha o menu (e abre de novo se já estiver fechado)
 			if isOpen then
 				pcall(function() Window:Close() end)
 				isOpen = false
 				if bubbleAtiva then bubble.Visible = true end
 			else
 				openMenu()
+			end
+		end,
+	}
+
+	UIS.InputBegan:Connect(function(input, gp)
+		if gp then return end
+		local name = input.KeyCode.Name
+		for action, key in pairs(keybinds) do
+			if key == name then
+				local fn = keyActions[action]
+				if fn then fn() end
+				break
 			end
 		end
 	end)
